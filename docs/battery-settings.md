@@ -32,7 +32,25 @@ data:
   until: "18:30"
 ```
 
-Existing `duration: Custom` discharge automations still resolve the saved custom duration. The same value is accepted for charge. Provider restrictions still apply: Amber overrides support at most 240 minutes; FoxESS supports at most 1092 minutes; SolaX and Neovolt must support the requested native duration. SolaX native charge schedules cannot represent an exact 24-hour window. Unsupported requests fail before taking ownership or changing an existing timer.
+Existing `duration: Custom` discharge automations still resolve the saved custom duration. The same value is accepted for charge. Provider restrictions still apply: Amber overrides support at most 240 minutes; FoxESS supports at most 1092 minutes; SolaX and Neovolt must support the requested native duration. Solplanet dispatch uses the integration's 1–4 hour schedule slots, cannot cross midnight, and rejects requests that do not fit. It preserves non-overlapping slots already configured for that day; an overlapping schedule is left unchanged and the command fails. SolaX native charge schedules cannot represent an exact 24-hour window. Unsupported requests fail before taking ownership or changing an existing timer.
+
+### Solplanet Home Assistant integration
+
+Select **Solplanet — via Solplanet Home Assistant integration** and configure
+the usable battery capacity plus maximum charge and discharge power. PowerSync
+uses the selected integration entry's battery, meter, work-mode, schedule
+power, and Schedule Configured entities. Battery power is treated as negative
+while charging and positive while discharging; grid power is positive while
+importing and negative while exporting. When no house-load sensor is available,
+PowerSync estimates load from solar, grid, and battery power. The integration
+must expose its **Replace Schedule Day** action so PowerSync can preserve other
+schedule slots instead of clearing a whole day.
+
+Temporary charge, discharge, and zero-power hold use the most recent half-hour
+boundary. Solplanet's integration restricts a slot to 1–4 whole hours and
+disallows crossing midnight. The optimizer refreshes an active hold on its
+normal control cycle; verify the inverter's response before relying on a
+temporary schedule.
 
 The classic dashboard provides an editable custom duration and finish-at controls too. A request or countdown confirms command handling; fresh battery/grid telemetry is needed to establish the physical result. Safety limits, power limits, and restoration rules still apply.
 

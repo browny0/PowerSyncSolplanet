@@ -24,6 +24,7 @@ from ..const import (
     BATTERY_SYSTEM_GOODWE,
     BATTERY_SYSTEM_NEOVOLT,
     BATTERY_SYSTEM_SAJ_H2,
+    BATTERY_SYSTEM_SOLPLANET,
     BATTERY_SYSTEM_SIGENERGY,
     BATTERY_SYSTEM_SOLAREDGE,
     BATTERY_SYSTEM_SOLAX,
@@ -201,6 +202,7 @@ _PROFILES: tuple[BatteryConnectionProfile, ...] = (
     _p("saj_ha", BATTERY_SYSTEM_SAJ_H2, "SAJ H2 Modbus integration", "ha_control", upstream_domains=("saj_h2_modbus",), requires_upstream=True),
     _p("fronius_ha", BATTERY_SYSTEM_FRONIUS_RESERVA, "Fronius Modbus integration", "ha_control", upstream_domains=("fronius_modbus",), requires_upstream=True),
     _p("neovolt_ha", BATTERY_SYSTEM_NEOVOLT, "Neovolt integration", "ha_control", upstream_domains=("neovolt",), requires_upstream=True),
+    _p("solplanet_ha", BATTERY_SYSTEM_SOLPLANET, "Solplanet integration", "ha_control", upstream_domains=("solplanet",), requires_upstream=True),
     _p("solaredge_composite", BATTERY_SYSTEM_SOLAREDGE, "HA telemetry plus direct curtailment", "hybrid"),
     _p(
         "solaredge_ha_only",
@@ -286,6 +288,7 @@ def legacy_profile_id(
         BATTERY_SYSTEM_SAJ_H2: "saj_ha",
         BATTERY_SYSTEM_FRONIUS_RESERVA: "fronius_ha",
         BATTERY_SYSTEM_NEOVOLT: "neovolt_ha",
+        BATTERY_SYSTEM_SOLPLANET: "solplanet_ha",
         BATTERY_SYSTEM_SOLAREDGE: "solaredge_composite",
         BATTERY_SYSTEM_CUSTOM: "custom_entities",
     }.get(battery_system, "tesla_provider")

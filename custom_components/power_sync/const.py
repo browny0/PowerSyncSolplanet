@@ -244,6 +244,7 @@ BATTERY_SYSTEM_SOLAX = "solax"
 BATTERY_SYSTEM_SAJ_H2 = "saj_h2"
 BATTERY_SYSTEM_FRONIUS_RESERVA = "fronius_reserva"
 BATTERY_SYSTEM_NEOVOLT = "neovolt"
+BATTERY_SYSTEM_SOLPLANET = "solplanet"
 BATTERY_SYSTEM_SOLAREDGE = "solaredge"
 BATTERY_SYSTEM_ANKER_SOLIX = "anker_solix"
 BATTERY_SYSTEM_CUSTOM = "custom"
@@ -261,6 +262,7 @@ BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2/HS2 — via SAJ H2 Modbus integration",
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage (BYD/Reserva) — via Fronius Modbus integration",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt/Bytewatt — via Neovolt Modbus integration",
+    BATTERY_SYSTEM_SOLPLANET: "Solplanet — via Solplanet Home Assistant integration",
     BATTERY_SYSTEM_SOLAREDGE: "SolarEdge Home Battery / inverter curtailment — HA entity bridge + Modbus TCP",
     BATTERY_SYSTEM_ANKER_SOLIX: "Anker Solix — X1 Modbus or Anker Solix HA integration",
     BATTERY_SYSTEM_CUSTOM: "Custom / external controller — planner only via Home Assistant entities",
@@ -605,6 +607,15 @@ CONF_FRONIUS_RESERVA_MAX_DISCHARGE_KW = "fronius_reserva_max_discharge_kw"
 DEFAULT_FRONIUS_RESERVA_BATTERY_CAPACITY_KWH = 9.6
 DEFAULT_FRONIUS_RESERVA_MAX_CHARGE_KW = 5.0
 DEFAULT_FRONIUS_RESERVA_MAX_DISCHARGE_KW = 5.0
+
+# Solplanet battery system — bridges via calvinbui/home-assistant-solplanet.
+CONF_SOLPLANET_CONFIG_ENTRY_ID = "solplanet_config_entry_id"
+CONF_SOLPLANET_BATTERY_CAPACITY_KWH = "solplanet_battery_capacity_kwh"
+CONF_SOLPLANET_MAX_CHARGE_KW = "solplanet_max_charge_kw"
+CONF_SOLPLANET_MAX_DISCHARGE_KW = "solplanet_max_discharge_kw"
+DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH = 51.2
+DEFAULT_SOLPLANET_MAX_CHARGE_KW = 5.0
+DEFAULT_SOLPLANET_MAX_DISCHARGE_KW = 5.0
 
 # Neovolt / Bytewatt battery system — bridges via pvandenh/NeovoltBattery_ModbusPlugin
 # Install the neovolt integration from HACS first; PowerSync reads/writes its entities.
@@ -2098,6 +2109,7 @@ OPTIMIZATION_PROVIDER_NATIVE_NAMES = {
     BATTERY_SYSTEM_SAJ_H2: "SAJ H2",
     BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage",
     BATTERY_SYSTEM_NEOVOLT: "Neovolt",
+    BATTERY_SYSTEM_SOLPLANET: "Solplanet",
     BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
     BATTERY_SYSTEM_ANKER_SOLIX: "Anker Solix",
     BATTERY_SYSTEM_CUSTOM: "Custom / external controller",
@@ -2224,6 +2236,7 @@ TARGET_EXPORT_POWER_BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_SAJ_H2,
     BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
+    BATTERY_SYSTEM_SOLPLANET,
     BATTERY_SYSTEM_ANKER_SOLIX,
 }
 
@@ -2236,6 +2249,7 @@ TARGET_CHARGE_POWER_BATTERY_SYSTEMS = {
     BATTERY_SYSTEM_SOLAX,
     BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
+    BATTERY_SYSTEM_SOLPLANET,
     BATTERY_SYSTEM_ANKER_SOLIX,
 }
 
@@ -2269,6 +2283,7 @@ BATTERY_CAPACITY_DEFAULTS = {
     BATTERY_SYSTEM_SAJ_H2: 10000,     # Varies, default 10 kWh
     BATTERY_SYSTEM_FRONIUS_RESERVA: 9600,  # Fronius GEN24 storage varies by module count
     BATTERY_SYSTEM_NEOVOLT: 20100,    # Bytewatt pack is commonly 20.1 kWh
+    BATTERY_SYSTEM_SOLPLANET: 51200,  # Default is configurable during setup
     BATTERY_SYSTEM_SOLAREDGE: 10000,  # SolarEdge Home Battery varies by stack
     BATTERY_SYSTEM_ANKER_SOLIX: 10000, # Anker Solix X1/Solarbank varies by stack
     BATTERY_SYSTEM_CUSTOM: 10000,     # User-provided external system
@@ -2287,6 +2302,7 @@ BATTERY_POWER_DEFAULTS = {
     BATTERY_SYSTEM_SAJ_H2: 5000,       # Varies by model
     BATTERY_SYSTEM_FRONIUS_RESERVA: 5000,  # Reserva/GEN24 common operating target
     BATTERY_SYSTEM_NEOVOLT: 5000,      # Configurable in the upstream Neovolt integration
+    BATTERY_SYSTEM_SOLPLANET: 5000,    # Configurable during setup
     BATTERY_SYSTEM_SOLAREDGE: 5000,    # Active-power curtailment only in v1
     BATTERY_SYSTEM_ANKER_SOLIX: 5000,  # X1/Solarbank stack varies by installation
     BATTERY_SYSTEM_CUSTOM: 5000,       # User-provided external system

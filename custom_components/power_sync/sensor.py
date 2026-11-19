@@ -154,6 +154,7 @@ from .const import (
     CONF_SIGENERGY_CHARGER_ENABLED,
     CONF_BATTERY_SYSTEM,
     BATTERY_SYSTEM_FOXESS,
+    BATTERY_SYSTEM_SOLPLANET,
     BATTERY_SYSTEM_SUNGROW,
     BATTERY_MODE_STATE_NORMAL,
     BATTERY_MODE_STATE_FORCE_CHARGE,
@@ -1961,6 +1962,7 @@ async def async_setup_entry(
     saj_h2_coordinator = domain_data.get("saj_h2_coordinator")
     fronius_reserva_coordinator = domain_data.get("fronius_reserva_coordinator")
     neovolt_coordinator = domain_data.get("neovolt_coordinator")
+    solplanet_coordinator = domain_data.get("solplanet_coordinator")
     solaredge_coordinator = domain_data.get("solaredge_coordinator")
     anker_solix_coordinator = domain_data.get("anker_solix_coordinator")
     custom_energy_coordinator = domain_data.get("custom_energy_coordinator")
@@ -1976,6 +1978,7 @@ async def async_setup_entry(
     is_saj_h2 = domain_data.get("is_saj_h2", False)
     is_fronius_reserva = domain_data.get("is_fronius_reserva", False)
     is_neovolt = domain_data.get("is_neovolt", False)
+    is_solplanet = domain_data.get("is_solplanet", False)
     is_solaredge = domain_data.get("is_solaredge", False)
     is_anker_solix = domain_data.get("is_anker_solix", False)
     is_custom_battery = domain_data.get("is_custom_battery", False)
@@ -2114,6 +2117,8 @@ async def async_setup_entry(
         energy_coordinator = fronius_reserva_coordinator
     elif is_neovolt:
         energy_coordinator = neovolt_coordinator
+    elif is_solplanet:
+        energy_coordinator = solplanet_coordinator
     elif is_solaredge:
         energy_coordinator = solaredge_coordinator
     elif is_anker_solix:
@@ -2617,6 +2622,8 @@ async def async_setup_entry(
         battery_system = "fronius_reserva"
     elif is_neovolt:
         battery_system = "neovolt"
+    elif is_solplanet:
+        battery_system = BATTERY_SYSTEM_SOLPLANET
     elif is_anker_solix:
         battery_system = "anker_solix"
     entities.append(BatteryHealthSensor(

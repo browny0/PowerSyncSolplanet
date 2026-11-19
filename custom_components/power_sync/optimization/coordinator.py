@@ -1380,6 +1380,30 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return True
 
+        # Solplanet's zero-power custom schedule is the hold primitive. Raising
+        # SOC min as well would be redundant and could persist after the
+        # temporary schedule is removed.
+        if self.battery_system == "solplanet":
+            if not self.energy_coordinator or not hasattr(
+                self.energy_coordinator, "set_backup_mode"
+            ):
+                _LOGGER.warning(
+                    "Optimizer: Solplanet IDLE schedule control is unavailable"
+                )
+                return False
+            if await fenced_call(
+                self,
+                lambda: self.energy_coordinator.set_backup_mode(),
+                "set_backup_mode",
+            ) is False:
+                return False
+            _LOGGER.info(
+                "Optimizer: IDLE — Solplanet zero-power schedule hold at %d%% SOC",
+                soc_pct,
+            )
+            self._idle_hold_reserve = None
+            return True
+
         # SAJ H2 holds SOC through its passive AppMode control. It has no
         # writable backup reserve, and the queued upstream switch transition
         # can explicitly fail verification. Preserve that result so the

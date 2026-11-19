@@ -10931,7 +10931,13 @@ class SolaxBatteryEnergyCoordinator(
             return self._energy_acc.publish_site_solar(site_solar_data)
         return site_solar_data
 
-    async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
+    async def force_charge(
+        self,
+        duration_minutes: int,
+        power_w: int,
+        *,
+        preserve_restore_modes: bool = False,
+    ) -> bool:
         if not self._native_control_allowed("SolaX force_charge"):
             return False
         return await self._controller.force_charge(duration_minutes, power_w)
@@ -11626,7 +11632,13 @@ class SajH2EnergyCoordinator(
             return False
         return await self._controller.force_charge(duration_minutes, power_w)
 
-    async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
+    async def force_discharge(
+        self,
+        duration_minutes: int,
+        power_w: int,
+        *,
+        preserve_restore_modes: bool = False,
+    ) -> bool:
         if not self._native_control_allowed("SAJ H2 force_discharge"):
             return False
         return await self._controller.force_discharge(duration_minutes, power_w)
@@ -12015,6 +12027,132 @@ class NeovoltEnergyCoordinator(
 
     async def async_shutdown(self) -> None:
         await self._controller.disconnect()
+
+
+class SolplanetEnergyCoordinator(
+    NativeBatteryIntegrationReadinessMixin,
+    DataUpdateCoordinator,
+):
+    """Bridge Solplanet battery telemetry and schedule controls through HA."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        solplanet_entry_id: str,
+        battery_capacity_kwh: float = 51.2,
+        max_charge_kw: float = 5.0,
+        max_discharge_kw: float = 5.0,
+        entry_id: str = "",
+    ) -> None:
+        from .inverters.solplanet import SolplanetBatteryController
+
+        self._entry_id = entry_id
+        self._controller = SolplanetBatteryController(
+            hass,
+            config_entry_id=solplanet_entry_id,
+            battery_capacity_kwh=battery_capacity_kwh,
+            max_charge_kw=max_charge_kw,
+            max_discharge_kw=max_discharge_kw,
+        )
+        self._energy_acc = EnergyAccumulator(hass, "solplanet", entry_id)
+        self._validated = False
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_solplanet_energy",
+            update_interval=timedelta(seconds=30),
+        )
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        if not self._energy_acc._last_update:
+            await self._energy_acc.async_restore()
+        try:
+            if not self._validated:
+                await self._controller.connect()
+                self._validated = True
+            status = self._controller.get_status()
+        except Exception as exc:
+            stale = self._native_stale_data()
+            if stale:
+                _LOGGER.warning("Solplanet entity read failed, returning stale data: %s", exc)
+                return stale
+            raise UpdateFailed(f"Solplanet entity read failed: {exc}") from exc
+
+        solar_kw = status["solar_power"]
+        grid_kw = status["grid_power"]
+        battery_kw = status["battery_power"]
+        load_kw = status["load_power"]
+        telemetry_ready = status["telemetry_ready"]
+        if telemetry_ready:
+            buy, sell = _get_current_prices(self.hass, self._entry_id)
+            _update_energy_accumulator_with_ev_load(
+                self._energy_acc,
+                self.hass,
+                self._entry_id,
+                solar_kw,
+                grid_kw,
+                battery_kw,
+                load_kw,
+                buy,
+                sell,
+            )
+
+        data = {
+            "telemetry_ready": telemetry_ready,
+            "solar_power": solar_kw,
+            "grid_power": grid_kw,
+            "battery_power": battery_kw,
+            "load_power": load_kw,
+            "load_power_estimated": True,
+            "battery_level": status["battery_level"],
+            "battery_capacity_kwh": status["battery_capacity_kwh"],
+            "battery_max_charge_power_w": status["battery_max_charge_power_w"],
+            "battery_max_discharge_power_w": status["battery_max_discharge_power_w"],
+            "mode": status["mode"],
+            "energy_summary": self._energy_acc.as_dict(),
+        }
+        if getattr(self, "_additional_solar_enabled", False) is True or getattr(
+            self._energy_acc, "_solar_segment_seen", False
+        ) is True:
+            return self._energy_acc.publish_site_solar(data)
+        return data
+
+    async def force_charge(self, duration_minutes: int, power_w: int) -> bool:
+        if not self._native_control_allowed("Solplanet force_charge"):
+            return False
+        return await self._controller.force_charge(duration_minutes, power_w)
+
+    async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
+        if not self._native_control_allowed("Solplanet force_discharge"):
+            return False
+        return await self._controller.force_discharge(duration_minutes, power_w)
+
+    async def restore_normal(self) -> bool:
+        if not self._native_control_allowed("Solplanet restore_normal"):
+            return False
+        return await self._controller.restore_normal()
+
+    async def set_backup_mode(self) -> bool:
+        if not self._native_control_allowed("Solplanet set_backup_mode"):
+            return False
+        return await self._controller.set_backup_mode()
+
+    async def restore_work_mode_from_idle(self) -> bool:
+        if not self._native_control_allowed("Solplanet restore_work_mode_from_idle"):
+            return False
+        return await self._controller.restore_work_mode_from_idle()
+
+    async def set_backup_reserve(self, percent: int) -> bool:
+        if not self._native_control_allowed("Solplanet set_backup_reserve"):
+            return False
+        return await self._controller.set_backup_reserve(percent)
+
+    async def get_backup_reserve(self) -> int | None:
+        return await self._controller.get_backup_reserve()
+
+    async def async_shutdown(self) -> None:
+        await self._energy_acc.async_flush()
 
 
 class AnkerSolixEnergyCoordinator(
