@@ -46,7 +46,6 @@ class SolplanetBatteryController:
         self._max_charge_w = float(max_charge_kw) * 1000
         self._max_discharge_w = float(max_discharge_kw) * 1000
         self._entity_map: dict[str, str] = {}
-        self._use_replace_schedule = True
         self._active_schedule_day: str | None = None
         self._active_schedule_slot: dict[str, int | str] | None = None
         self._original_schedule_power: tuple[int, int] | None = None
@@ -70,15 +69,10 @@ class SolplanetBatteryController:
         if options and _MODE_SELF_CONSUMPTION not in options:
             raise ValueError("solplanet_self_consumption_unavailable")
         has_service = getattr(self.hass.services, "has_service", None)
-        if callable(has_service):
-            self._use_replace_schedule = has_service(
-                "solplanet", "replace_schedule_day"
-            )
-            if not self._use_replace_schedule and not all(
-                has_service("solplanet", service)
-                for service in ("clear_schedule", "set_schedule_slots")
-            ):
-                raise ValueError("solplanet_schedule_services_unavailable")
+        if callable(has_service) and not has_service(
+            "solplanet", "replace_schedule_day"
+        ):
+            raise ValueError("solplanet_replace_schedule_service_unavailable")
         return True
 
     def _discover_entities(self) -> None:
@@ -258,55 +252,17 @@ class SolplanetBatteryController:
                 )
                 return False
 
-            if self._use_replace_schedule:
-                if self._original_schedule_power is None:
-                    self._original_schedule_power = (
-                        int(attributes.get("pin", 0)),
-                        int(attributes.get("pout", 0)),
-                    )
-                await self._replace_schedule_day(
-                    day,
-                    [*slots, new_slot],
-                    pin=int(round(charge_w)),
-                    pout=int(round(discharge_w)),
+            if self._original_schedule_power is None:
+                self._original_schedule_power = (
+                    int(attributes.get("pin", 0)),
+                    int(attributes.get("pout", 0)),
                 )
-            else:
-                if slots and not (
-                    self._active_schedule_day == day
-                    and slots == [self._active_schedule_slot]
-                ):
-                    _LOGGER.error(
-                        "Solplanet legacy schedule actions require an empty day; "
-                        "existing schedule was left unchanged"
-                    )
-                    return False
-                if self._original_schedule_power is None:
-                    original_pin = self._read_number("schedule_input_power")
-                    original_pout = self._read_number("schedule_output_power")
-                    if original_pin is None or original_pout is None:
-                        _LOGGER.error(
-                            "Solplanet schedule power entities are unavailable; "
-                            "temporary schedule was not written"
-                        )
-                        return False
-                    self._original_schedule_power = (
-                        int(round(original_pin)),
-                        int(round(original_pout)),
-                    )
-                if self._active_schedule_day == day:
-                    await self._clear_day(day)
-                await self._set_number("schedule_input_power", charge_w)
-                await self._set_number("schedule_output_power", discharge_w)
-                await self.hass.services.async_call(
-                    "solplanet",
-                    "set_schedule_slots",
-                    {
-                        "entity_id": self._entity_map["schedule_configured"],
-                        "day": day,
-                        **new_slot,
-                    },
-                    blocking=True,
-                )
+            await self._replace_schedule_day(
+                day,
+                [*slots, new_slot],
+                pin=int(round(charge_w)),
+                pout=int(round(discharge_w)),
+            )
             await self._set_mode(_MODE_CUSTOM)
             self._active_schedule_day = day
             self._active_schedule_slot = new_slot
@@ -341,24 +297,13 @@ class SolplanetBatteryController:
                     if slot != self._active_schedule_slot
                 ]
                 if len(remaining_slots) != len(slots):
-                    if self._use_replace_schedule:
-                        pin, pout = self._original_schedule_power or (0, 0)
-                        await self._replace_schedule_day(
-                            day,
-                            remaining_slots,
-                            pin=pin,
-                            pout=pout,
-                        )
-                    elif slots == [self._active_schedule_slot]:
-                        await self._clear_day(day)
-                        pin, pout = self._original_schedule_power or (0, 0)
-                        await self._set_number("schedule_input_power", pin)
-                        await self._set_number("schedule_output_power", pout)
-                    else:
-                        raise ValueError(
-                            "Solplanet legacy restore would remove an externally "
-                            "changed schedule; leaving it unchanged"
-                        )
+                    pin, pout = self._original_schedule_power or (0, 0)
+                    await self._replace_schedule_day(
+                        day,
+                        remaining_slots,
+                        pin=pin,
+                        pout=pout,
+                    )
             await self._set_mode(_MODE_SELF_CONSUMPTION)
             self._active_schedule_day = None
             self._active_schedule_slot = None
@@ -426,28 +371,6 @@ class SolplanetBatteryController:
                 }
             )
         return slots
-
-    async def _set_number(self, key: str, value: float) -> None:
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {
-                "entity_id": self._entity_map[key],
-                "value": int(round(value)),
-            },
-            blocking=True,
-        )
-
-    async def _clear_day(self, day: str) -> None:
-        await self.hass.services.async_call(
-            "solplanet",
-            "clear_schedule",
-            {
-                "entity_id": self._entity_map["schedule_configured"],
-                "day": day,
-            },
-            blocking=True,
-        )
 
     @staticmethod
     def _slots_overlap(
