@@ -32,7 +32,7 @@ data:
   until: "18:30"
 ```
 
-Existing `duration: Custom` discharge automations still resolve the saved custom duration. The same value is accepted for charge. Provider restrictions still apply: Amber overrides support at most 240 minutes; FoxESS supports at most 1092 minutes; SolaX and Neovolt must support the requested native duration. Solplanet dispatch uses the integration's 1–4 hour schedule slots, cannot cross midnight, and rejects requests that do not fit. It preserves non-overlapping slots already configured for that day; an overlapping schedule is left unchanged and the command fails. SolaX native charge schedules cannot represent an exact 24-hour window. Unsupported requests fail before taking ownership or changing an existing timer.
+Existing `duration: Custom` discharge automations still resolve the saved custom duration. The same value is accepted for charge. Provider restrictions still apply: Amber overrides support at most 240 minutes; FoxESS supports at most 1092 minutes; SolaX and Neovolt must support the requested native duration. Solplanet dispatch uses the integration's 1–4 hour schedule slots, cannot cross midnight, and rejects requests that do not fit. It replaces that day's complete schedule, including any previously configured slots. SolaX native charge schedules cannot represent an exact 24-hour window. Unsupported requests fail before taking ownership or changing an existing timer.
 
 ### Solplanet Home Assistant integration
 
@@ -44,13 +44,13 @@ while charging and positive while discharging; grid power is positive while
 importing and negative while exporting. When no house-load sensor is available,
 PowerSync estimates load from solar, grid, and battery power.
 
-PowerSync requires the integration's **Replace Schedule Day** action. A force
+PowerSync requires the integration's **Replace Schedule Day** and
+**Clear Schedule** actions. A force
 charge/discharge replaces that day's complete slot list with the temporary
 slot, sets both `pin` and `pout` to the configured charge/discharge maximums,
-then selects Custom mode. On restore, PowerSync replaces the day with an empty
-slot list and selects Self-consumption mode. Any schedule slots previously
-configured for that day are therefore removed. Update the Solplanet integration
-if **Replace Schedule Day** is unavailable.
+then selects Custom mode. On restore, PowerSync calls **Clear Schedule** with
+`day: all` and selects Self-consumption mode, removing schedule slots from every
+day. Update the Solplanet integration if either action is unavailable.
 
 Temporary charge, discharge, and zero-power hold use the most recent half-hour
 boundary. Solplanet's integration restricts a slot to 1–4 whole hours and

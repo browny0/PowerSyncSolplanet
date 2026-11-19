@@ -5714,7 +5714,7 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
                 if "solplanet_missing_entities:" in msg:
                     errors["base"] = "solplanet_missing_entities"
                     description_placeholders["first_missing"] = msg.split(":", 1)[1].split(",")[0]
-                elif "solplanet_replace_schedule_service_unavailable" in msg:
+                elif "solplanet_schedule_service_unavailable" in msg:
                     errors["base"] = "solplanet_schedule_service_unavailable"
                 else:
                     errors["base"] = "solplanet_connect_failed"
@@ -11897,7 +11897,7 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
                 if "solplanet_missing_entities:" in msg:
                     errors["base"] = "solplanet_missing_entities"
                     description_placeholders["first_missing"] = msg.split(":", 1)[1].split(",")[0]
-                elif "solplanet_replace_schedule_service_unavailable" in msg:
+                elif "solplanet_schedule_service_unavailable" in msg:
                     errors["base"] = "solplanet_schedule_service_unavailable"
                 else:
                     errors["base"] = "solplanet_connect_failed"

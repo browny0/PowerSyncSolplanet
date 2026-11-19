@@ -100,16 +100,22 @@ class _FakeRegistry:
 
 
 class _FakeServices:
-    def __init__(self, states: _FakeStates, *, replace_schedule: bool = True):
+    def __init__(
+        self,
+        states: _FakeStates,
+        *,
+        replace_schedule: bool = True,
+        clear_schedule: bool = True,
+    ):
         self.states = states
         self.replace_schedule = replace_schedule
+        self.clear_schedule = clear_schedule
         self.calls: list[tuple[str, str, dict]] = []
 
     def has_service(self, domain: str, service: str) -> bool:
-        return (
-            domain == "solplanet"
-            and service == "replace_schedule_day"
-            and self.replace_schedule
+        return domain == "solplanet" and (
+            (service == "replace_schedule_day" and self.replace_schedule)
+            or (service == "clear_schedule" and self.clear_schedule)
         )
 
     async def async_call(
@@ -139,6 +145,10 @@ class _FakeServices:
                 state.attributes["pin"] = data["pin"]
             if "pout" in data:
                 state.attributes["pout"] = data["pout"]
+        elif domain == "solplanet" and service == "clear_schedule":
+            state = self.states.get(data["entity_id"])
+            for day in state.attributes["raw_schedule"]:
+                state.attributes["raw_schedule"][day] = []
 
 
 class _FakeHass:
@@ -234,7 +244,7 @@ def test_force_charge_uses_latest_half_hour_boundary_and_selected_limits():
     assert calls[1][2]["option"] == "Custom mode"
 
 
-def test_restore_clears_owned_day_and_returns_to_self_consumption():
+def test_restore_clears_all_schedule_days_and_returns_to_self_consumption():
     hass = _FakeHass()
     controller = _controller(hass)
 
@@ -242,11 +252,10 @@ def test_restore_clears_owned_day_and_returns_to_self_consumption():
     hass.services.calls.clear()
     assert asyncio.run(controller.restore_normal())
 
-    assert hass.services.calls[0][0:2] == ("solplanet", "replace_schedule_day")
+    assert hass.services.calls[0][0:2] == ("solplanet", "clear_schedule")
     assert hass.services.calls[0][2] == {
         "entity_id": "binary_sensor.battery_eq1_schedule_configured",
-        "day": "Thu",
-        "slots": [],
+        "day": "all",
     }
     assert hass.services.calls[1][0:2] == ("select", "select_option")
     assert hass.services.calls[1][2]["option"] == "Self-consumption mode"
@@ -325,7 +334,7 @@ def test_hold_creates_a_zero_power_slot():
     assert schedule_call[2]["pout"] == 0
 
 
-def test_replace_schedule_day_action_is_required():
+def test_schedule_actions_are_required():
     hass = _FakeHass()
     hass.services = _FakeServices(hass.states, replace_schedule=False)
     controller = _controller(hass)
@@ -333,6 +342,19 @@ def test_replace_schedule_day_action_is_required():
     try:
         asyncio.run(controller.connect())
     except ValueError as exc:
-        assert str(exc) == "solplanet_replace_schedule_service_unavailable"
+        assert str(exc) == "solplanet_schedule_service_unavailable"
     else:
-        raise AssertionError("Expected missing Replace Schedule Day action to fail")
+        raise AssertionError("Expected missing schedule action to fail")
+
+
+def test_clear_schedule_action_is_required():
+    hass = _FakeHass()
+    hass.services = _FakeServices(hass.states, clear_schedule=False)
+    controller = _controller(hass)
+
+    try:
+        asyncio.run(controller.connect())
+    except ValueError as exc:
+        assert str(exc) == "solplanet_schedule_service_unavailable"
+    else:
+        raise AssertionError("Expected missing Clear Schedule action to fail")
