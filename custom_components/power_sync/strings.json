@@ -161,6 +161,21 @@
         },
         "submit": "Connect"
       },
+      "solplanet_battery": {
+        "title": "Solplanet battery connection",
+        "description": "PowerSync reads telemetry and uses the Solplanet integration's battery controls and schedule actions. Confirm the selected integration has one battery device and its main meter configured.",
+        "data": {
+          "solplanet_battery_capacity_kwh": "Battery capacity",
+          "solplanet_max_charge_kw": "Maximum charge power",
+          "solplanet_max_discharge_kw": "Maximum discharge power"
+        },
+        "data_description": {
+          "solplanet_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the optimizer.",
+          "solplanet_max_charge_kw": "Maximum charge power in kW. Force-charge control is scheduled by the Solplanet integration.",
+          "solplanet_max_discharge_kw": "Maximum discharge power in kW. Force-discharge control is scheduled by the Solplanet integration."
+        },
+        "submit": "Connect"
+      },
       "amber_site_selection": {
         "title": "Select your Amber site",
         "description": "Your Amber account has multiple sites. Select the NMI associated with this location.",
@@ -496,6 +511,23 @@
           "optimization_max_grid_export_w": "Site/DNSP export cap in kW. Auto-detected only when your inverter reports its own export limit; otherwise Profit Max solar export stays off until you set this. Set 0 for zero-export sites. This does not limit battery power used by house loads.",
           "optimization_max_grid_import_w": "Maximum site grid import in kW. Set 0 for no site import cap.",
           "optimization_allow_grid_charge": "When disabled, the planner will not schedule forced grid charging."
+        },
+        "submit": "Save"
+      },
+      "solplanet_connection": {
+        "title": "Solplanet connection",
+        "description": "Update the Solplanet integration entry and battery capacity and dispatch power limits.",
+        "data": {
+          "solplanet_config_entry_id": "Solplanet integration",
+          "solplanet_battery_capacity_kwh": "Battery capacity",
+          "solplanet_max_charge_kw": "Maximum charge power",
+          "solplanet_max_discharge_kw": "Maximum discharge power"
+        },
+        "data_description": {
+          "solplanet_config_entry_id": "The Solplanet integration entry to read battery and meter telemetry and send schedule controls through.",
+          "solplanet_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the optimizer.",
+          "solplanet_max_charge_kw": "Maximum charge power in kW. Used to limit dispatch commands.",
+          "solplanet_max_discharge_kw": "Maximum discharge power in kW. Used to limit dispatch commands."
         },
         "submit": "Save"
       },
@@ -1272,6 +1304,9 @@
       "saj_connect_failed": "Failed to validate SAJ H2 entities. Check the selected integration entry and try again.",
       "fronius_reserva_missing_entities": "Could not find the required Fronius GEN24 storage entities in the selected fronius_modbus integration entry. The first missing entity was: {first_missing}. Make sure the integration is installed, the system is online, and storage entities have been created in Home Assistant.",
       "fronius_reserva_connect_failed": "Failed to validate Fronius GEN24 storage entities. Check the selected integration entry and try again.",
+      "solplanet_missing_entities": "Could not find the required Solplanet battery, meter, work-mode, and schedule entities in the selected integration entry. The first missing entity was: {first_missing}. Make sure the battery and meter entities are enabled and available.",
+      "solplanet_connect_failed": "Failed to validate Solplanet entities. Check the selected integration entry and try again.",
+      "solplanet_schedule_service_unavailable": "Update the Solplanet integration to a version that provides the Replace Schedule Day action, then reload it and try again.",
       "neovolt_missing_entities": "Could not find the required Neovolt entities in the selected Neovolt integration entry. Make sure the integration is installed, the system is online, and its entities have been created in Home Assistant.",
       "neovolt_connect_failed": "Failed to validate Neovolt entities. Check the selected integration entry and try again.",
       "neovolt_capacity_invalid": "Enter positive battery capacities in kWh, separated by commas.",
@@ -1294,6 +1329,7 @@
       "esy_sunhome_not_installed": "The ESY Sunhome integration is not installed. Install it via HACS (search 'ESY Sunhome') and add a device before continuing.",
       "saj_h2_not_installed": "The SAJ H2 Modbus integration is not installed. Install it via HACS (search 'SAJ H2 Inverter Modbus') and add your inverter before continuing.",
       "fronius_reserva_not_installed": "The Fronius Modbus integration is not installed. Install it via HACS and add your GEN24 BYD or Reserva storage system before continuing.",
+      "solplanet_not_installed": "The Solplanet Home Assistant integration is not installed or no configured Solplanet entry was selected. Install and configure it before continuing.",
       "neovolt_not_installed": "The Neovolt Modbus integration is not installed. Install it via HACS and add your Neovolt/Bytewatt system before continuing.",
       "solax_not_installed": "The Solax Modbus integration is not installed. Install it via HACS (search 'Solax Modbus') and add your inverter before continuing.",
       "monitoring_cleanup_failed": "Monitoring Mode was not enabled because PowerSync could not safely release its current battery control. Check the logs and try again."
@@ -1393,6 +1429,7 @@
           "saj_h2_connection": "SAJ H2 connection",
           "fronius_reserva_connection": "Fronius GEN24 storage connection",
           "neovolt_connection": "Neovolt connection",
+          "solplanet_connection": "Solplanet connection",
           "anker_solix": "Anker Solix connection",
           "custom_battery": "Custom external controller",
           "optimization": "Smart Optimization",

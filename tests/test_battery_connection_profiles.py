@@ -85,10 +85,11 @@ def test_all_supported_battery_systems_have_registered_profiles():
 
     registered = {profile.battery_system for profile in profiles.PROFILE_REGISTRY.values()}
 
-    assert len(systems) == 15
+    assert len(systems) == 16
     assert registered == systems
     assert all(profiles.profiles_for_system(system) for system in systems)
     assert "goodwe_ha_monitoring" in profiles.PROFILE_REGISTRY
+    assert profiles.PROFILE_REGISTRY["solplanet_ha"].upstream_domains == ("solplanet",)
     assert all(
         profile.requires_upstream
         for profile in profiles.PROFILE_REGISTRY.values()

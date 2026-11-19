@@ -151,6 +151,7 @@ from .const import (
     BATTERY_SYSTEM_SAJ_H2,
     BATTERY_SYSTEM_FRONIUS_RESERVA,
     BATTERY_SYSTEM_NEOVOLT,
+    BATTERY_SYSTEM_SOLPLANET,
     BATTERY_SYSTEM_SOLAREDGE,
     BATTERY_SYSTEM_ANKER_SOLIX,
     BATTERY_SYSTEM_CUSTOM,
@@ -200,6 +201,13 @@ from .const import (
     DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
     DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
     NEOVOLT_SURPLUS_BALANCER_MODES,
+    CONF_SOLPLANET_CONFIG_ENTRY_ID,
+    CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+    CONF_SOLPLANET_MAX_CHARGE_KW,
+    CONF_SOLPLANET_MAX_DISCHARGE_KW,
+    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
+    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
     CONF_SOLAREDGE_HOST,
     CONF_SOLAREDGE_PORT,
     CONF_SOLAREDGE_SLAVE_ID,
@@ -828,6 +836,7 @@ BATTERY_SYSTEM_CONNECTION_KEYS: dict[str, tuple[str, ...]] = {
         CONF_NEOVOLT_CONFIG_ENTRY_ID,
         CONF_NEOVOLT_CONFIG_ENTRY_IDS,
     ),
+    BATTERY_SYSTEM_SOLPLANET: (CONF_SOLPLANET_CONFIG_ENTRY_ID,),
     BATTERY_SYSTEM_SOLAREDGE: (
         CONF_SOLAREDGE_HOST,
         CONF_SOLAREDGE_PORT,
@@ -2919,6 +2928,8 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
             return await self.async_step_fronius_reserva_battery()
         elif self._selected_battery_system == BATTERY_SYSTEM_NEOVOLT:
             return await self.async_step_neovolt_battery()
+        elif self._selected_battery_system == BATTERY_SYSTEM_SOLPLANET:
+            return await self.async_step_solplanet_battery()
         elif self._selected_battery_system == BATTERY_SYSTEM_SOLAREDGE:
             return await self.async_step_solaredge()
         elif self._selected_battery_system == BATTERY_SYSTEM_ANKER_SOLIX:
@@ -3158,6 +3169,7 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
             **getattr(self, "_saj_h2_data", {}),
             **getattr(self, "_fronius_reserva_data", {}),
             **getattr(self, "_neovolt_data", {}),
+            **getattr(self, "_solplanet_data", {}),
             **getattr(self, "_solaredge_data", {}),
             **getattr(self, "_anker_solix_data", {}),
             **getattr(self, "_custom_battery_data", {}),
@@ -3213,6 +3225,7 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
             BATTERY_SYSTEM_SAJ_H2: "SAJ H2",
             BATTERY_SYSTEM_FRONIUS_RESERVA: "Fronius GEN24 storage",
             BATTERY_SYSTEM_NEOVOLT: "Neovolt",
+            BATTERY_SYSTEM_SOLPLANET: "Solplanet",
             BATTERY_SYSTEM_SOLAREDGE: "SolarEdge",
             BATTERY_SYSTEM_ANKER_SOLIX: "Anker Solix",
             BATTERY_SYSTEM_CUSTOM: "Custom",
@@ -5627,6 +5640,120 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
         return self.async_show_form(
             step_id="fronius_reserva_battery",
             data_schema=vol.Schema(schema_fields),
+            errors=errors,
+            description_placeholders=description_placeholders or None,
+        )
+
+    async def async_step_solplanet_battery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure the Solplanet HA bridge and validate its entity set."""
+        solplanet_entries = self.hass.config_entries.async_entries("solplanet")
+        if not solplanet_entries:
+            return self.async_abort(reason="solplanet_not_installed")
+
+        source_entry_id = str(
+            getattr(self, "_battery_profile_data", {}).get(
+                CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID, ""
+            )
+        )
+        selected_entry = self.hass.config_entries.async_get_entry(source_entry_id)
+        if selected_entry is None or selected_entry.domain != "solplanet":
+            return self.async_abort(reason="solplanet_not_installed")
+
+        errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
+        if user_input is not None:
+            capacity_kwh = float(
+                user_input.get(
+                    CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                )
+            )
+            max_charge_kw = float(
+                user_input.get(
+                    CONF_SOLPLANET_MAX_CHARGE_KW,
+                    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
+                )
+            )
+            max_discharge_kw = float(
+                user_input.get(
+                    CONF_SOLPLANET_MAX_DISCHARGE_KW,
+                    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
+                )
+            )
+            try:
+                from .inverters.solplanet import SolplanetBatteryController
+
+                await SolplanetBatteryController(
+                    self.hass,
+                    config_entry_id=source_entry_id,
+                    battery_capacity_kwh=capacity_kwh,
+                    max_charge_kw=max_charge_kw,
+                    max_discharge_kw=max_discharge_kw,
+                ).connect()
+                self._solplanet_data = {
+                    CONF_SOLPLANET_CONFIG_ENTRY_ID: source_entry_id,
+                    CONF_SOLPLANET_BATTERY_CAPACITY_KWH: capacity_kwh,
+                    CONF_SOLPLANET_MAX_CHARGE_KW: max_charge_kw,
+                    CONF_SOLPLANET_MAX_DISCHARGE_KW: max_discharge_kw,
+                }
+                return self._create_final_entry()
+            except ValueError as exc:
+                msg = str(exc)
+                if "solplanet_missing_entities:" in msg:
+                    errors["base"] = "solplanet_missing_entities"
+                    description_placeholders["first_missing"] = msg.split(":", 1)[1].split(",")[0]
+                elif "solplanet_replace_schedule_service_unavailable" in msg:
+                    errors["base"] = "solplanet_schedule_service_unavailable"
+                else:
+                    errors["base"] = "solplanet_connect_failed"
+            except Exception as exc:
+                _LOGGER.error("Solplanet battery setup error: %s", exc)
+                errors["base"] = "solplanet_connect_failed"
+
+        return self.async_show_form(
+            step_id="solplanet_battery",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                        default=DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=200,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kWh",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SOLPLANET_MAX_CHARGE_KW,
+                        default=DEFAULT_SOLPLANET_MAX_CHARGE_KW,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=10,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SOLPLANET_MAX_DISCHARGE_KW,
+                        default=DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=10,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
+                        )
+                    ),
+                }
+            ),
             errors=errors,
             description_placeholders=description_placeholders or None,
         )
@@ -8696,6 +8823,8 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
             menu_options.append("fronius_reserva_connection")
         elif battery_system == BATTERY_SYSTEM_NEOVOLT:
             menu_options.append("neovolt_connection")
+        elif battery_system == BATTERY_SYSTEM_SOLPLANET:
+            menu_options.append("solplanet_connection")
         elif battery_system == BATTERY_SYSTEM_SOLAREDGE:
             menu_options.append("solaredge_connection")
         elif battery_system == BATTERY_SYSTEM_ANKER_SOLIX:
@@ -9108,6 +9237,8 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
             return await self.async_step_fronius_reserva_connection()
         if battery_system == BATTERY_SYSTEM_NEOVOLT:
             return await self.async_step_neovolt_connection()
+        if battery_system == BATTERY_SYSTEM_SOLPLANET:
+            return await self.async_step_solplanet_connection()
         if battery_system == BATTERY_SYSTEM_SOLAREDGE:
             return await self.async_step_solaredge_connection()
         if battery_system == BATTERY_SYSTEM_ANKER_SOLIX:
@@ -11692,6 +11823,160 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
                     )
                 ),
             }),
+            errors=errors,
+            description_placeholders=description_placeholders or None,
+        )
+
+    async def async_step_solplanet_connection(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Update Solplanet integration source and battery power settings."""
+        from .inverters.solplanet import SolplanetBatteryController
+
+        solplanet_entries = self.hass.config_entries.async_entries("solplanet")
+        if not solplanet_entries:
+            return self.async_abort(reason="solplanet_not_installed")
+
+        errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
+        if user_input is not None:
+            selected_entry_id = str(
+                user_input.get(CONF_SOLPLANET_CONFIG_ENTRY_ID, "")
+            )
+            capacity_kwh = float(
+                user_input.get(
+                    CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                )
+            )
+            max_charge_kw = float(
+                user_input.get(
+                    CONF_SOLPLANET_MAX_CHARGE_KW,
+                    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
+                )
+            )
+            max_discharge_kw = float(
+                user_input.get(
+                    CONF_SOLPLANET_MAX_DISCHARGE_KW,
+                    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
+                )
+            )
+            try:
+                await SolplanetBatteryController(
+                    self.hass,
+                    config_entry_id=selected_entry_id,
+                    battery_capacity_kwh=capacity_kwh,
+                    max_charge_kw=max_charge_kw,
+                    max_discharge_kw=max_discharge_kw,
+                ).connect()
+                new_data = dict(self.config_entry.data)
+                new_data[CONF_SOLPLANET_CONFIG_ENTRY_ID] = selected_entry_id
+                new_data[CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID] = selected_entry_id
+                new_data[CONF_SOLPLANET_BATTERY_CAPACITY_KWH] = capacity_kwh
+                new_data[CONF_SOLPLANET_MAX_CHARGE_KW] = max_charge_kw
+                new_data[CONF_SOLPLANET_MAX_DISCHARGE_KW] = max_discharge_kw
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                self._schedule_entry_reload()
+                return self.async_create_entry(
+                    title="", data=dict(self.config_entry.options)
+                )
+            except ValueError as exc:
+                msg = str(exc)
+                if "solplanet_missing_entities:" in msg:
+                    errors["base"] = "solplanet_missing_entities"
+                    description_placeholders["first_missing"] = msg.split(":", 1)[1].split(",")[0]
+                elif "solplanet_replace_schedule_service_unavailable" in msg:
+                    errors["base"] = "solplanet_schedule_service_unavailable"
+                else:
+                    errors["base"] = "solplanet_connect_failed"
+            except Exception as exc:
+                _LOGGER.error("Solplanet battery options error: %s", exc)
+                errors["base"] = "solplanet_connect_failed"
+
+        current_entry_id = self._get_option(
+            CONF_SOLPLANET_CONFIG_ENTRY_ID,
+            self.config_entry.data.get(
+                CONF_SOLPLANET_CONFIG_ENTRY_ID,
+                self.config_entry.data.get(CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID, ""),
+            ),
+        )
+        return self.async_show_form(
+            step_id="solplanet_connection",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SOLPLANET_CONFIG_ENTRY_ID,
+                        default=current_entry_id,
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(
+                                    value=source.entry_id,
+                                    label=source.title or source.entry_id,
+                                )
+                                for source in solplanet_entries
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                        default=self._get_option(
+                            CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                            self.config_entry.data.get(
+                                CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                                DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                            ),
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=200,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kWh",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SOLPLANET_MAX_CHARGE_KW,
+                        default=self._get_option(
+                            CONF_SOLPLANET_MAX_CHARGE_KW,
+                            self.config_entry.data.get(
+                                CONF_SOLPLANET_MAX_CHARGE_KW,
+                                DEFAULT_SOLPLANET_MAX_CHARGE_KW,
+                            ),
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=10,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SOLPLANET_MAX_DISCHARGE_KW,
+                        default=self._get_option(
+                            CONF_SOLPLANET_MAX_DISCHARGE_KW,
+                            self.config_entry.data.get(
+                                CONF_SOLPLANET_MAX_DISCHARGE_KW,
+                                DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
+                            ),
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.1,
+                            max=10,
+                            step=0.1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
+                        )
+                    ),
+                }
+            ),
             errors=errors,
             description_placeholders=description_placeholders or None,
         )
