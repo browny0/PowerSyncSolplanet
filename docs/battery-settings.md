@@ -43,9 +43,13 @@ while charging and positive while discharging; grid power is positive while
 importing and negative while exporting. When no house-load sensor is available,
 PowerSync estimates load from solar, grid, and battery power.
 
-PowerSync requires the integration's **Replace Schedule Day** action so it can
-preserve other slots when setting and restoring temporary schedules. Update
-the Solplanet integration if this action is unavailable.
+PowerSync requires the integration's **Replace Schedule Day** action. A force
+charge/discharge replaces that day's complete slot list with the temporary
+slot, sets both `pin` and `pout` to the configured charge/discharge maximums,
+then selects Custom mode. On restore, PowerSync replaces the day with an empty
+slot list and selects Self-consumption mode. Any schedule slots previously
+configured for that day are therefore removed. Update the Solplanet integration
+if **Replace Schedule Day** is unavailable.
 
 Temporary charge, discharge, and zero-power hold use the most recent half-hour
 boundary. Solplanet's integration restricts a slot to 1–4 whole hours and
