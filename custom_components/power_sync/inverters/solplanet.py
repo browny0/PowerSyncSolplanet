@@ -68,10 +68,11 @@ class SolplanetBatteryController:
         if options and _MODE_SELF_CONSUMPTION not in options:
             raise ValueError("solplanet_self_consumption_unavailable")
         has_service = getattr(self.hass.services, "has_service", None)
-        if callable(has_service) and not has_service(
-            "solplanet", "replace_schedule_day"
+        if callable(has_service) and not all(
+            has_service("solplanet", service)
+            for service in ("replace_schedule_day", "clear_schedule")
         ):
-            raise ValueError("solplanet_replace_schedule_service_unavailable")
+            raise ValueError("solplanet_schedule_service_unavailable")
         return True
 
     def _discover_entities(self) -> None:
@@ -258,7 +259,7 @@ class SolplanetBatteryController:
         try:
             day = self._active_schedule_day
             if day is not None and self._active_schedule_slot is not None:
-                await self._replace_schedule_day(day, [])
+                await self._clear_schedule()
             await self._set_mode(_MODE_SELF_CONSUMPTION)
             self._active_schedule_day = None
             self._active_schedule_slot = None
@@ -321,6 +322,17 @@ class SolplanetBatteryController:
             "solplanet",
             "replace_schedule_day",
             data,
+            blocking=True,
+        )
+
+    async def _clear_schedule(self) -> None:
+        await self.hass.services.async_call(
+            "solplanet",
+            "clear_schedule",
+            {
+                "entity_id": self._entity_map["schedule_configured"],
+                "day": "all",
+            },
             blocking=True,
         )
 
