@@ -38939,6 +38939,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data, hass))
         is_solplanet_local = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLPLANET
         if is_neovolt_local or is_solplanet_local:
+            battery_brand = "Solplanet" if is_solplanet_local else "Neovolt"
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 neovolt_coord = entry_data.get(
@@ -38946,7 +38947,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 if not neovolt_coord:
                     force_discharge_state["active"] = False
-                    _LOGGER.error("Force discharge: Neovolt coordinator not available")
+                    _LOGGER.error(
+                        "Force discharge: %s coordinator not available",
+                        battery_brand,
+                    )
                     return
 
                 power_w = command_power_w
@@ -38961,7 +38965,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_discharge_state["source"] = source
                     force_discharge_state["duration"] = duration
                     force_discharge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info("Neovolt FORCE DISCHARGE ACTIVE for %d minutes", duration)
+                    _LOGGER.info(
+                        "%s FORCE DISCHARGE ACTIVE for %d minutes",
+                        battery_brand,
+                        duration,
+                    )
 
                     async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
                         "active": True,
@@ -38980,7 +38988,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         if _command_generation[0] != _restore_gen:
                             return
                         if force_discharge_state["active"]:
-                            _LOGGER.info("Neovolt force discharge expired, auto-restoring")
+                            _LOGGER.info(
+                                "%s force discharge expired, auto-restoring",
+                                battery_brand,
+                            )
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, (entry_service_data(entry.entry_id, {"source": "force_timer", "_allow_monitoring_restore": True}, call)), blocking=True)
 
                     force_discharge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
@@ -38989,12 +39000,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     await persist_force_mode_state()
                 else:
                     force_discharge_state["active"] = False
-                    _LOGGER.error("Neovolt force discharge failed")
+                    _LOGGER.error("%s force discharge failed", battery_brand)
                 return
             except Exception as e:
                 force_discharge_state["active"] = False
-                _LOGGER.error(f"Error in Neovolt force discharge: {e}", exc_info=True)
-                hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Neovolt entity write error"))
+                _LOGGER.error(
+                    "Error in %s force discharge: %s",
+                    battery_brand,
+                    e,
+                    exc_info=True,
+                )
+                hass.async_create_task(
+                    _notify_api_error(
+                        hass,
+                        "Force Discharge Failed",
+                        f"{battery_brand} entity write error",
+                    )
+                )
                 return
 
         # Check if this is a Sungrow system
@@ -40907,6 +40929,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data, hass))
         is_solplanet_local = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLPLANET
         if is_neovolt_local or is_solplanet_local:
+            battery_brand = "Solplanet" if is_solplanet_local else "Neovolt"
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 neovolt_coord = entry_data.get(
@@ -40914,7 +40937,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 if not neovolt_coord:
                     force_charge_state["active"] = False
-                    _LOGGER.error("Force charge: Neovolt coordinator not available")
+                    _LOGGER.error(
+                        "Force charge: %s coordinator not available",
+                        battery_brand,
+                    )
                     return
 
                 if force_discharge_state["active"]:
@@ -40933,7 +40959,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     force_charge_state["source"] = source
                     force_charge_state["duration"] = duration
                     force_charge_state["expires_at"] = dt_util.utcnow() + timedelta(minutes=duration)
-                    _LOGGER.info("Neovolt FORCE CHARGE ACTIVE for %d minutes", duration)
+                    _LOGGER.info(
+                        "%s FORCE CHARGE ACTIVE for %d minutes",
+                        battery_brand,
+                        duration,
+                    )
 
                     async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
                         "active": True,
@@ -40952,67 +40982,79 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         if _command_generation[0] != _restore_gen:
                             return
                         if force_charge_state["active"]:
-                            _LOGGER.info("Neovolt force charge expired, auto-restoring")
+                            _LOGGER.info(
+                                "%s force charge expired, auto-restoring",
+                                battery_brand,
+                            )
                             await hass.services.async_call(DOMAIN, SERVICE_RESTORE_NORMAL, (entry_service_data(entry.entry_id, {"source": "force_timer", "_allow_monitoring_restore": True}, call)), blocking=True)
 
                     force_charge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
                         hass, auto_restore_charge_neovolt, force_charge_state["expires_at"]
                     )
 
-                    # Some Neovolt bridge versions expose the requested duration entity
-                    # in minutes but still arm the inverter dispatch for a short
-                    # hardware timeout. Refresh the hardware command while the
-                    # PowerSync force window remains active so the inverter cannot
-                    # fall back to Normal early.
-                    from homeassistant.helpers.event import async_track_time_interval
+                    if not is_solplanet_local:
+                        # Neovolt can time out independently of PowerSync's
+                        # force window, so keep refreshing its hardware command.
+                        from homeassistant.helpers.event import async_track_time_interval
 
-                    async def refresh_neovolt_force_charge(_now):
-                        if _command_generation[0] != _restore_gen or not force_charge_state.get("active"):
-                            _cancel = force_charge_state.get("cancel_hardware_refresh_timer")
-                            if _cancel:
-                                _cancel()
-                                force_charge_state["cancel_hardware_refresh_timer"] = None
-                            return
+                        async def refresh_neovolt_force_charge(_now):
+                            if _command_generation[0] != _restore_gen or not force_charge_state.get("active"):
+                                _cancel = force_charge_state.get("cancel_hardware_refresh_timer")
+                                if _cancel:
+                                    _cancel()
+                                    force_charge_state["cancel_hardware_refresh_timer"] = None
+                                return
 
-                        expires_at = force_charge_state.get("expires_at")
-                        if not expires_at:
-                            return
+                            expires_at = force_charge_state.get("expires_at")
+                            if not expires_at:
+                                return
 
-                        remaining_seconds = (expires_at - dt_util.utcnow()).total_seconds()
-                        if remaining_seconds <= 0:
-                            return
+                            remaining_seconds = (expires_at - dt_util.utcnow()).total_seconds()
+                            if remaining_seconds <= 0:
+                                return
 
-                        refresh_duration = max(1, int((remaining_seconds + 59) // 60))
-                        try:
-                            await neovolt_coord.force_charge(
-                                refresh_duration,
-                                power_w=power_w,
-                                preserve_restore_modes=True,
-                            )
-                            _LOGGER.debug(
-                                "Neovolt force charge hardware refreshed (%dmin remaining, %sW)",
-                                refresh_duration,
-                                power_w,
-                            )
-                        except Exception as refresh_err:
-                            _LOGGER.warning("Neovolt force charge hardware refresh failed: %s", refresh_err)
+                            refresh_duration = max(1, int((remaining_seconds + 59) // 60))
+                            try:
+                                await neovolt_coord.force_charge(
+                                    refresh_duration,
+                                    power_w=power_w,
+                                    preserve_restore_modes=True,
+                                )
+                                _LOGGER.debug(
+                                    "Neovolt force charge hardware refreshed (%dmin remaining, %sW)",
+                                    refresh_duration,
+                                    power_w,
+                                )
+                            except Exception as refresh_err:
+                                _LOGGER.warning("Neovolt force charge hardware refresh failed: %s", refresh_err)
 
-                    if force_charge_state.get("cancel_hardware_refresh_timer"):
-                        force_charge_state["cancel_hardware_refresh_timer"]()
-                    force_charge_state["cancel_hardware_refresh_timer"] = async_track_time_interval(
-                        hass,
-                        refresh_neovolt_force_charge,
-                        timedelta(seconds=60),
-                    )
+                        if force_charge_state.get("cancel_hardware_refresh_timer"):
+                            force_charge_state["cancel_hardware_refresh_timer"]()
+                        force_charge_state["cancel_hardware_refresh_timer"] = async_track_time_interval(
+                            hass,
+                            refresh_neovolt_force_charge,
+                            timedelta(seconds=60),
+                        )
                     await persist_force_mode_state()
                 else:
                     force_charge_state["active"] = False
-                    _LOGGER.error("Neovolt force charge failed")
+                    _LOGGER.error("%s force charge failed", battery_brand)
                 return
             except Exception as e:
                 force_charge_state["active"] = False
-                _LOGGER.error(f"Error in Neovolt force charge: {e}", exc_info=True)
-                hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Neovolt entity write error"))
+                _LOGGER.error(
+                    "Error in %s force charge: %s",
+                    battery_brand,
+                    e,
+                    exc_info=True,
+                )
+                hass.async_create_task(
+                    _notify_api_error(
+                        hass,
+                        "Force Charge Failed",
+                        f"{battery_brand} entity write error",
+                    )
+                )
                 return
 
         # Check if this is a Sungrow system
@@ -42933,6 +42975,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_neovolt_local = bool(_get_neovolt_entry_ids(entry.data, hass))
         is_solplanet_local = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLPLANET
         if is_neovolt_local or is_solplanet_local:
+            battery_brand = "Solplanet" if is_solplanet_local else "Neovolt"
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 neovolt_coord = entry_data.get(
@@ -42940,10 +42983,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 if not neovolt_coord or not bool(await neovolt_coord.restore_normal()):
                     raise HomeAssistantError(
-                        "Neovolt did not confirm restore_normal"
+                        f"{battery_brand} did not confirm restore_normal"
                     )
 
-                if _restore_superseded("Neovolt restore"):
+                if _restore_superseded(f"{battery_brand} restore"):
                     return
 
                 force_charge_state["active"] = False
@@ -42951,7 +42994,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_charge_state["expires_at"] = None
                 force_discharge_state["expires_at"] = None
 
-                _LOGGER.info("Neovolt NORMAL OPERATION RESTORED")
+                _LOGGER.info("%s NORMAL OPERATION RESTORED", battery_brand)
 
                 if not suppress_notification:
                     try:
@@ -42972,7 +43015,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except HomeAssistantError:
                 raise
             except Exception as e:
-                _LOGGER.error(f"Error in Neovolt restore normal: {e}", exc_info=True)
+                _LOGGER.error(
+                    "Error in %s restore normal: %s",
+                    battery_brand,
+                    e,
+                    exc_info=True,
+                )
                 return
 
         is_solaredge_local = bool(
@@ -44760,24 +44808,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         is_neovolt_sc = bool(_get_neovolt_entry_ids(entry.data, hass))
         is_solplanet_sc = entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLPLANET
         if is_neovolt_sc or is_solplanet_sc:
+            battery_brand = "Solplanet" if is_solplanet_sc else "Neovolt"
             try:
                 entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 neovolt_coord = entry_data.get(
                     "solplanet_coordinator" if is_solplanet_sc else "neovolt_coordinator"
                 )
                 if not neovolt_coord:
-                    _LOGGER.error("Self-consumption: Neovolt coordinator not available")
+                    _LOGGER.error(
+                        "Self-consumption: %s coordinator not available",
+                        battery_brand,
+                    )
                     return
                 success = await _guarded_self_consumption_write(
                     neovolt_coord.restore_normal
                 )
                 if success:
-                    _LOGGER.info("Neovolt self-consumption mode restored (Normal dispatch)")
+                    _LOGGER.info(
+                        "%s self-consumption mode restored",
+                        battery_brand,
+                    )
                 else:
-                    _LOGGER.error("Failed to set Neovolt self-consumption mode")
+                    _LOGGER.error(
+                        "Failed to set %s self-consumption mode",
+                        battery_brand,
+                    )
                 return
             except Exception as e:
-                _LOGGER.error(f"Error setting Neovolt self-consumption: {e}", exc_info=True)
+                _LOGGER.error(
+                    "Error setting %s self-consumption: %s",
+                    battery_brand,
+                    e,
+                    exc_info=True,
+                )
                 return
 
         if is_solaredge_sc:
