@@ -100,12 +100,17 @@ class _FakeRegistry:
 
 
 class _FakeServices:
-    def __init__(self, states: _FakeStates):
+    def __init__(self, states: _FakeStates, *, replace_schedule: bool = True):
         self.states = states
+        self.replace_schedule = replace_schedule
         self.calls: list[tuple[str, str, dict]] = []
 
     def has_service(self, domain: str, service: str) -> bool:
-        return domain == "solplanet" and service == "replace_schedule_day"
+        if domain != "solplanet":
+            return False
+        if service == "replace_schedule_day":
+            return self.replace_schedule
+        return service in ("clear_schedule", "set_schedule_slots")
 
     async def async_call(
         self,
@@ -132,6 +137,25 @@ class _FakeServices:
             ]
             state.attributes["pin"] = data["pin"]
             state.attributes["pout"] = data["pout"]
+        elif domain == "solplanet" and service == "clear_schedule":
+            state = self.states.get(data["entity_id"])
+            state.attributes["raw_schedule"][data["day"]] = []
+        elif domain == "solplanet" and service == "set_schedule_slots":
+            state = self.states.get(data["entity_id"])
+            slot = {
+                "start_hour": data["start_hour"],
+                "start_minute": data["start_minute"],
+                "duration": data["duration"],
+                "mode": data["mode"],
+            }
+            raw_slot = (
+                0x3C02
+                + (slot["start_hour"] * 0x1000000)
+                + ((slot["start_minute"] // 30) * 0x1E0000)
+                + ((slot["duration"] - 1) * 0x3C00)
+                + (1 if slot["mode"] == "discharge" else 0)
+            )
+            state.attributes["raw_schedule"][data["day"]] = [raw_slot]
 
 
 class _FakeHass:
@@ -311,3 +335,38 @@ def test_hold_creates_a_zero_power_slot():
     ]
     assert schedule_call[2]["pin"] == 0
     assert schedule_call[2]["pout"] == 0
+
+
+def test_legacy_schedule_services_support_force_and_restore_for_empty_day():
+    hass = _FakeHass()
+    hass.services = _FakeServices(hass.states, replace_schedule=False)
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.connect())
+    assert asyncio.run(controller.force_charge(30, 4000))
+    assert hass.services.calls[0][0:2] == ("number", "set_value")
+    assert hass.services.calls[1][0:2] == ("number", "set_value")
+    assert hass.services.calls[2][0:2] == ("solplanet", "set_schedule_slots")
+    assert asyncio.run(controller.restore_normal())
+    assert any(
+        domain == "solplanet" and service == "clear_schedule"
+        for domain, service, _ in hass.services.calls
+    )
+    assert hass.states.get("select.battery_eq1_work_mode").state == (
+        "Self-consumption mode"
+    )
+
+
+def test_legacy_schedule_services_do_not_overwrite_existing_slots():
+    hass = _FakeHass()
+    hass.services = _FakeServices(hass.states, replace_schedule=False)
+    hass.states.get(
+        "binary_sensor.battery_eq1_schedule_configured"
+    ).attributes["raw_schedule"]["Thu"] = [
+        0x3C02 + (8 * 0x1000000) + 0x3C00
+    ]
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.connect())
+    assert asyncio.run(controller.force_charge(30, 4000)) is False
+    assert hass.services.calls == []
