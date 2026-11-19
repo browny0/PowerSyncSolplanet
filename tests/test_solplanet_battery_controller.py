@@ -135,8 +135,10 @@ class _FakeServices:
                 + (1 if slot["mode"] == "discharge" else 0)
                 for slot in data["slots"]
             ]
-            state.attributes["pin"] = data["pin"]
-            state.attributes["pout"] = data["pout"]
+            if "pin" in data:
+                state.attributes["pin"] = data["pin"]
+            if "pout" in data:
+                state.attributes["pout"] = data["pout"]
 
 
 class _FakeHass:
@@ -226,7 +228,7 @@ def test_force_charge_uses_latest_half_hour_boundary_and_selected_limits():
             }
         ],
         "pin": 5000,
-        "pout": 0,
+        "pout": 10000,
     }
     assert calls[1][0:2] == ("select", "select_option")
     assert calls[1][2]["option"] == "Custom mode"
@@ -241,8 +243,11 @@ def test_restore_clears_owned_day_and_returns_to_self_consumption():
     assert asyncio.run(controller.restore_normal())
 
     assert hass.services.calls[0][0:2] == ("solplanet", "replace_schedule_day")
-    assert hass.services.calls[0][2]["day"] == "Thu"
-    assert hass.services.calls[0][2]["slots"] == []
+    assert hass.services.calls[0][2] == {
+        "entity_id": "binary_sensor.battery_eq1_schedule_configured",
+        "day": "Thu",
+        "slots": [],
+    }
     assert hass.services.calls[1][0:2] == ("select", "select_option")
     assert hass.services.calls[1][2]["option"] == "Self-consumption mode"
 
@@ -256,14 +261,8 @@ def test_dispatch_that_would_cross_midnight_fails_without_writing():
     assert hass.services.calls == []
 
 
-def test_temporary_slot_preserves_non_overlapping_schedule():
+def test_temporary_slot_replaces_the_day_and_sets_both_power_limits():
     hass = _FakeHass()
-    existing_slot = {
-        "start_hour": 8,
-        "start_minute": 0,
-        "duration": 2,
-        "mode": "charge",
-    }
     hass.states.get(
         "binary_sensor.battery_eq1_schedule_configured"
     ).attributes["raw_schedule"]["Thu"] = [
@@ -274,7 +273,6 @@ def test_temporary_slot_preserves_non_overlapping_schedule():
     assert asyncio.run(controller.force_discharge(30, 8000))
 
     assert hass.services.calls[0][2]["slots"] == [
-        existing_slot,
         {
             "start_hour": 14,
             "start_minute": 30,
@@ -282,10 +280,11 @@ def test_temporary_slot_preserves_non_overlapping_schedule():
             "mode": "discharge",
         },
     ]
-    assert hass.services.calls[0][2]["pout"] == 8000
+    assert hass.services.calls[0][2]["pout"] == 10000
+    assert hass.services.calls[0][2]["pin"] == 5000
 
 
-def test_overlapping_existing_schedule_is_not_modified():
+def test_temporary_slot_replaces_an_overlapping_existing_schedule():
     hass = _FakeHass()
     hass.states.get(
         "binary_sensor.battery_eq1_schedule_configured"
@@ -294,8 +293,16 @@ def test_overlapping_existing_schedule_is_not_modified():
     ]
     controller = _controller(hass)
 
-    assert asyncio.run(controller.force_charge(30, 3000)) is False
-    assert hass.services.calls == []
+    assert asyncio.run(controller.force_charge(30, 3000))
+    assert hass.services.calls[0][0:2] == ("solplanet", "replace_schedule_day")
+    assert hass.services.calls[0][2]["slots"] == [
+        {
+            "start_hour": 14,
+            "start_minute": 30,
+            "duration": 1,
+            "mode": "charge",
+        }
+    ]
 
 
 def test_hold_creates_a_zero_power_slot():
