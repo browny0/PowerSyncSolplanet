@@ -2328,8 +2328,13 @@ class _FakeStates:
     def get(self, entity_id: str):
         return self._states.get(entity_id)
 
-    def async_all(self):
-        return list(self._states.values())
+    def async_all(self, domain=None):
+        if domain is None:
+            return list(self._states.values())
+        return [
+            state for state in self._states.values()
+            if state.entity_id.startswith(f"{domain}.")
+        ]
 
     def async_entity_ids(self, domain: str):
         prefix = f"{domain}."
@@ -2619,27 +2624,8 @@ def fake_actions(monkeypatch):
     actions._canonical_dynamic_tesla_vehicle_id = lambda h, e, vin: vin
     actions._dynamic_ev_state = {}
     actions._is_vehicle_charge_complete = AsyncMock(return_value=False)
+    actions._release_stopped_scheduled_tesla = AsyncMock(return_value=False)
 
-    async def resolve_max_grid_import_kw(hass, config_entry, params=None):
-        explicit = (params or {}).get("max_grid_import_kw")
-        if explicit:
-            return explicit
-
-        entry_data = hass.data["power_sync"][config_entry.entry_id]
-        coordinator = entry_data.get("tesla_coordinator")
-        site_info = getattr(coordinator, "_site_info_cache", None) if coordinator else None
-        if isinstance(site_info, dict) and site_info.get("max_site_meter_power_ac"):
-            return float(site_info["max_site_meter_power_ac"])
-
-        settings = entry_data.get("automation_store")._data.get("home_power_settings", {})
-        amps = int(float(settings.get("max_grid_import_amps") or 0))
-        if amps <= 0:
-            return None
-        phases = 3 if settings.get("phase_type") == "three" else 1
-        voltage = int(float(settings.get("default_voltage") or 240))
-        return round(amps * voltage * phases / 1000.0, 3)
-
-    actions._resolve_max_grid_import_kw = resolve_max_grid_import_kw
     actions._is_vehicle_charge_complete = AsyncMock(return_value=False)
     monkeypatch.setitem(sys.modules, "power_sync.automations.actions", actions)
     monkeypatch.setattr(
@@ -4919,6 +4905,55 @@ def test_specific_tesla_unavailable_location_is_not_permissive_unknown(monkeypat
     )
 
 
+@pytest.mark.parametrize(
+    ("fleet_location", "secondary_location", "secondary_age", "expected"),
+    [
+        ("not_home", "home", timedelta(minutes=2), "home"),
+        ("home", "not_home", timedelta(minutes=2), "not_home"),
+        ("home", "work", timedelta(minutes=8), "work"),
+        ("not_home", "home", timedelta(minutes=8), "not_home"),
+        ("not_home", "home", None, "not_home"),
+        ("home", "not_home", None, "not_home"),
+        ("not_home", "home", timedelta(minutes=-2), "not_home"),
+        ("unavailable", "unavailable", None, "home"),
+    ],
+)
+def test_exact_vin_location_prefers_newer_report_and_keeps_away_on_conflict(
+    monkeypatch, fleet_location, secondary_location, secondary_age, expected,
+):
+    vin = "LRWYTEST000000001"
+    other_vin = "LRWYTEST000000002"
+    fleet = "device_tracker.first_location"
+    secondary = "device_tracker.second_location"
+    home_binary = "binary_sensor.second_located_at_home"
+    other = "binary_sensor.other_located_at_home"
+    hass = _FakeHass(states={
+        fleet: fleet_location, secondary: secondary_location, home_binary: "on", other: "on",
+    })
+    hass.device_registry = SimpleNamespace(devices={
+        "fleet": SimpleNamespace(id="fleet", identifiers={("tesla_fleet", vin)}),
+        "secondary": SimpleNamespace(id="secondary", identifiers={("teslemetry", vin)}),
+        "other": SimpleNamespace(id="other", identifiers={("teslemetry", other_vin)}),
+    })
+    hass.entity_registry = SimpleNamespace(entities={
+        entity: SimpleNamespace(entity_id=entity, device_id=device)
+        for entity, device in (
+            (fleet, "fleet"), (secondary, "secondary"), (home_binary, "secondary"), (other, "other"),
+        )
+    })
+    monkeypatch.setattr(_ha_dr, "async_get", lambda _hass: _hass.device_registry)
+    now = datetime.now(timezone.utc)
+    first = hass.states.get(fleet)
+    first.last_reported = now - timedelta(minutes=8)
+    second = hass.states.get(secondary)
+    if secondary_age is not None:
+        second.last_updated = now - secondary_age
+    hass.states.get(home_binary).last_reported = now
+    hass.states.get(other).last_reported = now
+
+    assert asyncio.run(ev_planner.get_ev_location(hass, _FakeConfigEntry(), vin)) == expected
+
+
 def test_unspecified_ev_plug_state_checks_later_home_vehicle(monkeypatch):
     first_vin = "XP7YHCEL7TB811704"
     second_vin = "LRWYHCEKXTC687964"
@@ -5034,6 +5069,199 @@ def test_mapped_ble_plug_state_wins_over_stale_fleet_row(monkeypatch):
         )
         is True
     )
+
+
+@pytest.mark.parametrize(
+    ("sensor_age", "local_state", "same_vin", "newer_cable", "expect_plugged"),
+    (
+        (timedelta(seconds=5), "off", True, False, False),
+        (timedelta(minutes=5), "off", True, False, True),
+        (timedelta(seconds=5), "off", False, False, True),
+        (timedelta(seconds=5), "on", True, False, True),
+        (timedelta(seconds=5), "off", True, True, True),
+    ),
+)
+def test_plug_detection_uses_fresh_exact_wall_connector_unplug_readback(
+    monkeypatch, sensor_age, local_state, same_vin, newer_cable, expect_plugged,
+):
+    first_vin = "XP7YHCEL7TB811704"
+    second_vin = "LRWYHCEKXTC687964"
+    cable = "binary_sensor.tesla_yf88_charge_cable"
+    local = "binary_sensor.tesla_wall_connector_vehicle_connected"
+    fleet = "sensor.wall_connector_vehicle"
+    hass = _paired_ble_plug_hass(
+        {
+            "binary_sensor.tesla_yf88_charge_flap": "on",
+            cable: "on",
+            local: local_state,
+            fleet: second_vin if same_vin else first_vin,
+        },
+        first_vin,
+        second_vin,
+    )
+    entry = _paired_ble_plug_entry(first_vin, second_vin)
+    now = datetime.now(timezone.utc)
+    hass.states.get(local).last_reported = now - sensor_age
+    hass.states.get(local).last_changed = now - timedelta(hours=1)
+    hass.states.get(cable).last_changed = now - (
+        timedelta(minutes=30) if newer_cable else timedelta(hours=1)
+    )
+    hass.states.get(cable).last_reported = now - timedelta(seconds=2)
+    hass.entity_registry.entities[cable].platform = "tesla_fleet"
+    hass.entity_registry.entities.update({
+        local: SimpleNamespace(entity_id=local, device_id="wall-local",
+                               platform="tesla_wall_connector"),
+        fleet: SimpleNamespace(entity_id=fleet, device_id="wall-fleet",
+                               platform="tesla_fleet"),
+    })
+    hass.device_registry.devices.update({
+        "wall-local": SimpleNamespace(
+            id="wall-local", identifiers={("tesla_wall_connector", "TEST-SERIAL")},
+            serial_number="TEST-SERIAL",
+        ),
+        "wall-fleet": SimpleNamespace(
+            id="wall-fleet", identifiers={("tesla_fleet", "TEST-SERIAL")},
+            serial_number="TEST-SERIAL",
+        ),
+    })
+    hass.device_registry.async_get = hass.device_registry.devices.get
+    monkeypatch.setattr(_ha_dr, "async_get", lambda value: value.device_registry)
+
+    assert asyncio.run(ev_planner.is_ev_plugged_in(
+        hass, entry, vehicle_vin=second_vin,
+    )) is expect_plugged
+    if not expect_plugged:
+        actions = importlib.import_module("power_sync.automations.actions")
+        params = {"vehicle_vin": second_vin, "owner_mode": "smart_schedule_solar_surplus"}
+        authority = actions._tesla_transport_authority(
+            hass, entry, params,
+            operation="start", ignore_recovery_gate=True,
+        )
+        assert not authority()
+        assert actions._tesla_transport_authority(
+            hass, entry, params,
+            cleanup=True, operation="stop", ignore_recovery_gate=True,
+        )()
+
+        # The same captured request consults the current connector report.
+        hass.states.get(local).state = "on"
+        assert authority()
+
+
+@pytest.mark.parametrize(
+    ("transition", "veto"),
+    (
+        ("unplug", True),
+        ("edge_only_report", True),
+        ("expired", False),
+        ("unobserved", False),
+        ("replacement_vin", False),
+        ("intervening_vin", False),
+        ("intervening_plug_cycle", False),
+        ("unavailable", False),
+        ("registry_rebind", False),
+        ("vin_from_old_episode", False),
+        ("integration_unloaded", False),
+    ),
+)
+def test_solar_start_veto_when_tesla_clears_connector_vin_before_cable_off(
+    monkeypatch, transition, veto,
+):
+    vin = "LRWYHCEKXTC687964"
+    other_vin = "XP7YHCEL7TB811704"
+    local = "binary_sensor.tesla_wall_connector_vehicle_connected"
+    fleet = "sensor.wall_connector_vehicle"
+    cable = "binary_sensor.tesla_yf88_charge_cable"
+    hass = _paired_ble_plug_hass({local: "on", fleet: vin, cable: "on"}, other_vin, vin)
+    entry = _paired_ble_plug_entry(other_vin, vin)
+    ev_load = importlib.import_module("power_sync.ev_load")
+    actions = importlib.import_module("power_sync.automations.actions")
+    clock = datetime.now(timezone.utc)
+    monkeypatch.setattr(ev_load, "utc_now", lambda: clock)
+    local_state = hass.states.get(local)
+    fleet_state = hass.states.get(fleet)
+    cable_state = hass.states.get(cable)
+    local_state.last_changed = clock - timedelta(minutes=3)
+    local_state.last_reported = clock
+    fleet_state.last_changed = local_state.last_changed + timedelta(seconds=10)
+    cable_state.last_changed = local_state.last_changed
+    cable_state.last_reported = clock
+    hass.entity_registry.entities[cable].platform = "tesla_fleet"
+    hass.entity_registry.entities.update({
+        local: SimpleNamespace(device_id="wall-local", platform="tesla_wall_connector"),
+        fleet: SimpleNamespace(device_id="wall-fleet", platform="tesla_fleet"),
+    })
+    hass.device_registry.devices.update({
+        "wall-local": SimpleNamespace(serial_number="EXACT-TEST-SERIAL"),
+        "wall-fleet": SimpleNamespace(serial_number="EXACT-TEST-SERIAL"),
+    })
+    hass.device_registry.async_get = hass.device_registry.devices.get
+    monkeypatch.setattr(_ha_dr, "async_get", lambda value: value.device_registry)
+
+    listeners = {}
+    on_unload = []
+    entry.async_on_unload = on_unload.append
+
+    def subscribe(current_hass, entities, handler):
+        assert current_hass is hass and set(entities) == {local, fleet}
+        listeners.update({entity: handler for entity in entities})
+        return listeners.clear
+
+    def dispatch(entity, previous, current):
+        if listener := listeners.get(entity):
+            listener(SimpleNamespace(data={
+                "entity_id": entity, "old_state": previous, "new_state": current,
+            }))
+
+    def emit(previous_state, new_state, changed_at):
+        previous = SimpleNamespace(state=previous_state, last_changed=local_state.last_changed)
+        local_state.state = new_state
+        local_state.last_changed = changed_at
+        local_state.last_reported = clock
+        dispatch(local, previous, local_state)
+
+    monkeypatch.setattr(_ha_core, "callback", lambda func: func, raising=False)
+    monkeypatch.setattr(_ha_event, "async_track_state_change_event", subscribe, raising=False)
+    if transition == "vin_from_old_episode":
+        fleet_state.last_changed = local_state.last_changed - timedelta(seconds=1)
+    if transition == "edge_only_report":
+        # The native coordinator's binary sensor may publish only on a change,
+        # including when Tesla's VIN arrives a few seconds after the ON edge.
+        local_state.last_reported = local_state.last_changed
+    if transition != "unobserved":
+        assert actions._fresh_wall_connector_unplugged_at(hass, entry, vin) is None
+
+    if transition == "integration_unloaded":
+        assert len(on_unload) == 1
+        on_unload[0]()
+
+    clock += timedelta(minutes=30) if transition == "edge_only_report" else timedelta(seconds=210)
+    if transition == "intervening_vin":
+        fleet_state.state = other_vin
+        dispatch(fleet, None, fleet_state)
+    fleet_state.state = other_vin if transition == "replacement_vin" else "unknown"
+    if transition == "unavailable":
+        emit("on", "unavailable", clock - timedelta(seconds=80))
+    if transition == "registry_rebind":
+        hass.entity_registry.entities[local].config_entry_id = "rebound"
+    unplug_age = {"edge_only_report": 105, "expired": 181}.get(transition, 75)
+    emit(local_state.state, "off", clock - timedelta(seconds=unplug_age))
+    if transition == "edge_only_report":
+        local_state.last_reported = local_state.last_changed
+    if transition == "intervening_plug_cycle":
+        emit("off", "on", clock - timedelta(seconds=50))
+        emit("on", "off", clock - timedelta(seconds=31))
+    cable_state.last_reported = clock
+
+    assert (actions._fresh_wall_connector_unplugged_at(hass, entry, vin) is not None) is veto
+    authority = actions._tesla_transport_authority(
+        hass, entry, {"vehicle_vin": vin, "owner_mode": "smart_schedule_solar_surplus"},
+        operation="start", ignore_recovery_gate=True,
+    )
+    assert authority() is not veto
+    cable_state.last_changed = clock - timedelta(seconds=1)
+    assert authority()
+    assert not listeners
 
 
 def test_unavailable_mapped_ble_falls_back_to_fleet_plug_state(monkeypatch):
@@ -6479,12 +6707,11 @@ def test_auto_schedule_grid_start_uses_optimizer_battery_target(monkeypatch, fak
     assert params["target_battery_charge_kw"] == 14.7
     assert params["max_battery_charge_rate_kw"] == 14.7
     assert params["max_inverter_kw"] == 10.0
-    assert params["max_grid_import_kw"] == 19.2
+    assert "max_grid_import_kw" not in params
 
 
-def test_auto_schedule_grid_start_prefers_tesla_site_meter_limit(monkeypatch, fake_actions):
+def test_auto_schedule_grid_start_leaves_tesla_site_limit_to_runtime(monkeypatch, fake_actions):
     fake_actions._action_start_ev_charging_dynamic = AsyncMock(return_value=True)
-    fake_actions._resolve_max_grid_import_kw = AsyncMock(return_value=16.1)
     monkeypatch.setattr(
         ev_planner.dt_util,
         "now",
@@ -6500,6 +6727,9 @@ def test_auto_schedule_grid_start_prefers_tesla_site_meter_limit(monkeypatch, fa
     hass.data["power_sync"]["entry-1"]["optimization_coordinator"] = SimpleNamespace(
         _config=SimpleNamespace(max_charge_w=14700, max_discharge_w=10000)
     )
+    hass.data["power_sync"]["entry-1"]["tesla_coordinator"] = SimpleNamespace(
+        _site_info_cache={"max_site_meter_power_ac": 16.1}
+    )
     executor = ev_planner.AutoScheduleExecutor(
         hass,
         _FakeConfigEntry(),
@@ -6513,17 +6743,8 @@ def test_auto_schedule_grid_start_prefers_tesla_site_meter_limit(monkeypatch, fa
 
     asyncio.run(executor._start_charging(VIN, settings, state, "grid_offpeak"))
 
-    fake_actions._resolve_max_grid_import_kw.assert_awaited_once_with(
-        hass,
-        executor.config_entry,
-        {
-            "max_inverter_kw": 10.0,
-            "max_battery_charge_rate_kw": 14.7,
-            "target_battery_charge_kw": 14.7,
-        },
-    )
     _hass, _entry, params = fake_actions._action_start_ev_charging_dynamic.await_args.args
-    assert params["max_grid_import_kw"] == 16.1
+    assert "max_grid_import_kw" not in params
 
 
 def test_auto_schedule_solar_uses_smart_schedule_battery_floor(monkeypatch, fake_actions):
@@ -9535,6 +9756,156 @@ def scheduled_reconciliation(monkeypatch, fake_actions):
     monkeypatch.setattr(ev_planner, "_price_level_executor", None)
     return SimpleNamespace(hass=hass, entry=entry, vins=vins, failed=failed, scheduled=scheduled,
                            coordinator=coordinator, actions=fake_actions, ownership=ownership)
+
+
+@pytest.fixture
+def stopped_scheduled_session(monkeypatch, scheduled_reconciliation):
+    """One scheduled Tesla owner whose fresh telemetry says it is stopped."""
+    f = scheduled_reconciliation
+    vin = f.vins[0]
+    for existing_vin in f.vins:
+        f.ownership.release_ev_ownership(f.hass, f.entry, existing_vin)
+    f.actions._dynamic_ev_state["entry-1"].clear()
+
+    f.ownership.claim_ev_ownership(f.hass, f.entry, vin, owner_mode="scheduled")
+    original_state = {
+        "active": True,
+        "session_id": "scheduled-session-before-stop",
+        "current_amps": 32,
+        "target_amps": 32,
+        "charging_started": True,
+        "params": {
+            "vehicle_id": vin,
+            "vehicle_vin": vin,
+            "charger_type": "tesla",
+            "charger_power_entity": f"sensor.{vin}_charger_power",
+            "owner_mode": "scheduled",
+            "dynamic_mode": "battery_target",
+        },
+    }
+    f.actions._dynamic_ev_state["entry-1"][vin] = original_state
+    observed_at = datetime.now(timezone.utc)
+    f.hass.states._states.update({
+        f"sensor.{vin}_charging_state": SimpleNamespace(
+            entity_id=f"sensor.{vin}_charging_state",
+            state="Stopped",
+            last_updated=observed_at,
+            attributes={},
+        ),
+        f"sensor.{vin}_charge_current": SimpleNamespace(
+            entity_id=f"sensor.{vin}_charge_current",
+            state="0",
+            last_updated=observed_at,
+            attributes={"unit_of_measurement": "A"},
+        ),
+        f"sensor.{vin}_charger_power": SimpleNamespace(
+            entity_id=f"sensor.{vin}_charger_power",
+            state="0",
+            last_updated=observed_at,
+            attributes={"unit_of_measurement": "kW"},
+        ),
+    })
+    monkeypatch.setattr(
+        ev_planner,
+        "discover_all_tesla_vehicles",
+        AsyncMock(return_value=[{"vin": vin}]),
+    )
+    monkeypatch.setattr(
+        ev_planner,
+        "is_ev_actively_charging",
+        AsyncMock(return_value=False),
+    )
+    return SimpleNamespace(**vars(f), vin=vin, original_state=original_state)
+
+
+@pytest.mark.parametrize("recovery_succeeds", [True, False])
+def test_scheduled_owner_with_fresh_stopped_telemetry_retries_start(
+    stopped_scheduled_session,
+    recovery_succeeds,
+):
+    f = stopped_scheduled_session
+    vin = f.vin
+    stopped = f.hass.states.get(f"sensor.{vin}_charging_state")
+    current = f.hass.states.get(f"sensor.{vin}_charge_current")
+    power = f.hass.states.get(f"sensor.{vin}_charger_power")
+    observed_at = datetime.now(timezone.utc)
+
+    async def release_stopped(_hass, _entry, vehicle_vin):
+        assert vehicle_vin == vin
+        assert stopped.state.lower() == "stopped"
+        assert float(current.state) == 0
+        assert float(power.state) == 0
+        assert (observed_at - stopped.last_updated).total_seconds() < 5
+        assert (observed_at - current.last_updated).total_seconds() < 5
+        assert (observed_at - power.last_updated).total_seconds() < 5
+        if not recovery_succeeds:
+            return False
+
+        params = {
+            "vehicle_id": vin,
+            "stop_charging": False,
+            "_expected_state": f.original_state,
+        }
+        released = await f.actions._action_stop_ev_charging_dynamic(
+            f.hass,
+            f.entry,
+            params,
+        )
+        return released
+
+    f.actions._release_stopped_scheduled_tesla = AsyncMock(
+        side_effect=release_stopped
+    )
+
+    asyncio.run(f.coordinator.evaluate({}, 10))
+
+    f.actions._release_stopped_scheduled_tesla.assert_awaited_once_with(
+        f.hass,
+        f.entry,
+        vin,
+    )
+    if recovery_succeeds:
+        f.actions._action_stop_ev_charging_dynamic.assert_awaited_once()
+        stop_params = f.actions._action_stop_ev_charging_dynamic.await_args.args[2]
+        assert stop_params["stop_charging"] is False
+        f.actions._action_start_ev_charging_dynamic.assert_not_awaited()
+        assert vin not in f.actions._dynamic_ev_state.get("entry-1", {})
+        assert f.ownership.get_active_ev_owner_mode(f.hass, f.entry, vin) is None
+
+        f.hass.data["power_sync"]["entry-1"]["force_charge_state"] = {"active": True}
+        asyncio.run(f.coordinator.evaluate({}, 10))
+        f.actions._release_stopped_scheduled_tesla.assert_awaited_once()
+        f.actions._action_start_ev_charging_dynamic.assert_not_awaited()
+
+        f.hass.data["power_sync"]["entry-1"]["force_charge_state"] = {"active": False}
+        asyncio.run(f.coordinator.evaluate({}, 10))
+        f.actions._action_start_ev_charging_dynamic.assert_awaited_once()
+        start_params = f.actions._action_start_ev_charging_dynamic.await_args.args[2]
+        assert start_params["vehicle_id"] == vin
+        assert start_params["vehicle_vin"] == vin
+        assert f.ownership.get_active_ev_owner_mode(f.hass, f.entry, vin) == "scheduled"
+        assert f.actions._dynamic_ev_state["entry-1"][vin] is not f.original_state
+    else:
+        f.actions._action_stop_ev_charging_dynamic.assert_not_awaited()
+        f.actions._action_start_ev_charging_dynamic.assert_not_awaited()
+        assert f.actions._dynamic_ev_state["entry-1"][vin] is f.original_state
+        assert f.ownership.get_active_ev_owner_mode(f.hass, f.entry, vin) == "scheduled"
+
+
+def test_scheduled_stopped_session_recovery_waits_for_force_charge_to_end(
+    stopped_scheduled_session,
+):
+    f = stopped_scheduled_session
+    f.hass.data["power_sync"]["entry-1"]["force_charge_state"] = {"active": True}
+    f.actions._release_stopped_scheduled_tesla = AsyncMock(return_value=True)
+
+    asyncio.run(f.coordinator.evaluate({}, 10))
+
+    f.actions._release_stopped_scheduled_tesla.assert_not_awaited()
+    f.actions._action_stop_ev_charging_dynamic.assert_not_awaited()
+    f.actions._action_start_ev_charging_dynamic.assert_not_awaited()
+    assert f.actions._dynamic_ev_state["entry-1"][f.vin] is f.original_state
+    assert f.ownership.get_active_ev_owner_mode(f.hass, f.entry, f.vin) == "scheduled"
 
 
 @pytest.mark.parametrize("already_charging", [True, False])

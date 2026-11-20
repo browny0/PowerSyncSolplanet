@@ -444,11 +444,15 @@ def test_canonical_sensor_and_mobile_share_solar_and_never_restore_invalid_total
     ns = {"SENSOR_TYPE_SOLAR_POWER":"solar_power", "SENSOR_TYPE_HOME_LOAD":"home_load",
           "SENSOR_TYPE_GRID_STATUS":"grid_status", "_LOCAL_OVERRIDABLE":{"solar_power"},
           "_sungrow_ac_inverter_power_kw":lambda *args: (_ for _ in ()).throw(AssertionError("late sum"))}
-    getter = extracted_method("custom_components/power_sync/sensor.py", "TeslaEnergySensor", "native_value", ns)
+    source = "custom_components/power_sync/sensor.py"
+    getter = extracted_method(source, "TeslaEnergySensor", "native_value", ns)
     sensor = NS(_entry=policy.entry, entity_description=NS(key="solar_power", value_fn=lambda d:d["solar_power"]),
                 _normalized_energy_data=lambda:normalized,
                 _local_coordinator=lambda: (_ for _ in ()).throw(AssertionError("local bypass")),
                 _restored_numeric_value=lambda _:99.)
+    for name in ("_additional_solar_enabled", "_local_sensor_reading"):
+        helper = extracted_method(source, "TeslaEnergySensor", name, ns)
+        setattr(sensor, name, MethodType(helper, sensor))
     assert getter(sensor) == 5.5
     view = NS(_config_entry=policy.entry, _hass=NS(data={"power_sync":{"site":{
         "goodwe_coordinator":NS(data=normalized)}}}))
@@ -662,7 +666,12 @@ def test_failed_checkpoint_releases_old_runtime_fence():
 
 
 def test_dual_sungrow_preserves_unknown_derived_load_from_composed_primary():
-    ns = {"_LOGGER":Mock(),"dt_util":NS(utcnow=lambda:NOW)}
+    telemetry = load("additional_solar_battery_telemetry", "custom_components/power_sync/battery_telemetry.py")
+    ns = {
+        "_LOGGER": Mock(),
+        "dt_util": NS(utcnow=lambda: NOW),
+        "oldest_paired_report": telemetry.oldest_paired_report,
+    }
     fn = extracted_method("custom_components/power_sync/coordinator.py", "DualSungrowCoordinator", "_async_update_data",ns)
     obj = NS(_coord1=NS(data={"solar_power":None,"solar_power_valid":False,"load_power":None}),
              _coord2=NS(data={"solar_power":1.,"load_power":1.}),
@@ -670,3 +679,4 @@ def test_dual_sungrow_preserves_unknown_derived_load_from_composed_primary():
              _children_control_ready=lambda:True,_combined_power_limit_w=lambda _:None)
     result = asyncio.run(fn(obj))
     assert result["solar_power"] is None and result["load_power"] is None
+    assert result["telemetry_observed_at"] == {"battery_level": None, "battery_power": None}

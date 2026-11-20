@@ -1514,6 +1514,58 @@ def _ev_power_observed_at(state: Any) -> datetime | None:
     ) or _ev_observed_at(getattr(state, "last_updated", None))
 
 
+def _wall_connector_display_currents(hass) -> dict[str, float]:
+    """Return actual current from a fresh local meter for an exact VIN."""
+    from .automations.actions import (
+        _exact_tesla_wall_connector_vehicle_associations,
+        _phase_current_state_amps,
+        _tesla_wall_connector_serial,
+    )
+    from .ev_load import is_current_ev_power_observation
+
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    meters: dict[str, list[tuple[float, float]]] = {}
+    for state in hass.states.async_all("sensor"):
+        entity = entity_registry.entities.get(state.entity_id)
+        if (
+            getattr(entity, "platform", None) != "tesla_wall_connector"
+            or getattr(entity, "disabled_by", None) is not None
+        ):
+            continue
+        if (
+            getattr(entity, "translation_key", None) != "vehicle_current_a"
+            and not re.search(r"_vehicle_current(?:_\d+)?$", state.entity_id)
+        ):
+            continue
+        observed_at = _ev_power_observed_at(state)
+        if observed_at is None or not is_current_ev_power_observation(observed_at):
+            continue
+        current, _, _ = _phase_current_state_amps(state)
+        if current is None or current <= 0.5 or str(state.state).lstrip().startswith("-"):
+            continue
+        device = device_registry.async_get(entity.device_id)
+        serial = _tesla_wall_connector_serial(device)
+        if serial:
+            meters.setdefault(serial, []).append((current, observed_at.timestamp()))
+
+    if not meters:
+        return {}
+    associations = _exact_tesla_wall_connector_vehicle_associations(
+        hass, entity_registry, device_registry,
+    )
+    currents = {}
+    for vin, association in associations.items():
+        connected_at = association["connected_observed_at"]
+        samples = meters.get(association["serial"], ())
+        if len(samples) != 1 or connected_at is None:
+            continue
+        current, observed_at = samples[0]
+        if observed_at >= connected_at:
+            currents[vin] = current
+    return currents
+
+
 _TESLA_CONNECTIVITY_RANK = {"online": 2, "asleep": 1, "offline": 0}
 
 
@@ -1634,6 +1686,54 @@ def _latest_ev_site_presence(
     if untimestamped_away:
         return "away", None
     return presence, observed_at
+
+
+def _exact_native_ev_site_presence(hass, vehicle_vin: str | None) -> str | None:
+    """Resolve explicit location reports from native Tesla devices for one VIN."""
+    vin = str(vehicle_vin or "").strip().upper()
+    if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
+        return None
+
+    native_sources = {
+        (device.id, identifier[0])
+        for device in iter_device_entries(dr.async_get(hass))
+        for identifier in device.identifiers
+        if len(identifier) >= 2
+        and identifier[0] in TESLA_INTEGRATIONS
+        and str(identifier[1]).upper() == vin
+    }
+    if not native_sources:
+        return None
+
+    now = datetime.now(timezone.utc)
+    future_home = False
+    observations = []
+    for entity in er.async_get(hass).entities.values():
+        source = (entity.device_id, getattr(entity, "platform", None))
+        if source not in native_sources or getattr(entity, "disabled_by", None):
+            continue
+        entity_id = entity.entity_id.lower()
+        if re.fullmatch(r"device_tracker\..*_location(?:_\d+)?", entity_id):
+            state = hass.states.get(entity.entity_id)
+            presence = _ev_tracker_site_presence(state)
+        elif re.fullmatch(r"binary_sensor\..*_located_at_home(?:_\d+)?", entity_id):
+            state = hass.states.get(entity.entity_id)
+            presence = {"on": "home", "off": "away"}.get(getattr(state, "state", None))
+        else:
+            continue
+        if presence is None:
+            continue
+        observed_at = _ev_observed_at(getattr(state, "last_updated", None))
+        if observed_at is not None and observed_at > now:
+            if presence == "home":
+                future_home = True
+                continue
+            observed_at = None
+        observations.append((presence, observed_at))
+
+    presence, _ = _latest_ev_site_presence(observations)
+    # A future home report alone cannot fall through to legacy unknown handling.
+    return presence or ("unavailable" if future_home else None)
 
 
 def _site_vehicle_candidates(vehicles: list[dict]) -> list[dict]:
@@ -17427,9 +17527,12 @@ class EVVehicleCommandView(HomeAssistantView):
         return await self._wait_for_vehicle_awake(vehicle_vin, timeout=30)
 
     async def _is_vehicle_at_home(self, vehicle_vin: str | None = None) -> bool:
-        """Check if vehicle is at home using binary_sensor or device_tracker."""
-        # First try: binary_sensor.*_located_at_home (Teslemetry)
-        # This is the most reliable method
+        """Check native location before falling back to legacy provider lookup."""
+        site_presence = _exact_native_ev_site_presence(self._hass, vehicle_vin)
+        if site_presence is not None:
+            return site_presence == "home"
+
+        # Preserve legacy lookup and unknown handling when no exact report exists.
         home_entity = await self._get_tesla_ev_entity(r"binary_sensor\..*_located_at_home$", vehicle_vin)
         if home_entity:
             state = self._hass.states.get(home_entity)
@@ -22191,9 +22294,10 @@ class EVLoadpointStatusView(HomeAssistantView):
             solar_config = get_stored_solar_surplus_config(entry_data)
 
             observed_vehicles = []
+            wall_connector_currents = _wall_connector_display_currents(self._hass)
             for vehicle in _get_ev_vehicles_status(self._hass, self._config_entry):
                 vehicle_id = vehicle.get("vehicle_id")
-                observed_vehicles.append({
+                observation = {
                     "vehicle_id": vehicle_id,
                     "vehicle_name": vehicle.get("vehicle_name"),
                     "bridge_vehicle_id": vehicle.get("bridge_vehicle_id"),
@@ -22226,7 +22330,17 @@ class EVLoadpointStatusView(HomeAssistantView):
                         vehicle_ids_match(configured_id, vehicle_id)
                         for configured_id in configured_vehicle_ids
                     ),
-                })
+                }
+                if (
+                    observation["current_amps"] is None
+                    and observation["is_charging"]
+                    and observation["site_presence"] != "away"
+                    and observation["power_available"] is not False
+                ):
+                    observation["current_amps"] = wall_connector_currents.get(
+                        str(vehicle_id).strip().upper()
+                    )
+                observed_vehicles.append(observation)
 
             zaptec_cached = entry_data.get("zaptec_cached_state")
             if zaptec_cached:
@@ -50396,46 +50510,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             configs_to_start = []
 
                         for vc in configs_to_start:
-                            # Get phases from vehicle config, falling back to auto-schedule
-                            # settings (the app may store phases in either location)
-                            vc_phases = vc.get("phases")
-                            if vc_phases is None or vc_phases <= 1:
-                                try:
-                                    from .automations.ev_charging_planner import get_auto_schedule_executor as _get_exec
-                                    _exec = _get_exec()
-                                    if _exec:
-                                        # Try to match by vehicle_id first
-                                        _matched = False
-                                        for _vid, _settings in _exec._settings.items():
-                                            if _vid == vc.get("vehicle_id") and _settings.phases > 1:
-                                                vc_phases = _settings.phases
-                                                if vc.get("min_amps") is None and vc.get("min_charge_amps") is None:
-                                                    vc["min_amps"] = _settings.min_charge_amps
-                                                if vc.get("max_amps") is None and vc.get("max_charge_amps") is None:
-                                                    vc["max_amps"] = _settings.max_charge_amps
-                                                if vc.get("voltage") is None:
-                                                    vc["voltage"] = _settings.voltage
-                                                if vc.get("charger_status_entity") is None:
-                                                    vc["charger_status_entity"] = _settings.charger_status_entity
-                                                _matched = True
-                                                break
-                                        if not _matched:
-                                            for _vid, _settings in _exec._settings.items():
-                                                if _settings.phases > 1:
-                                                    vc_phases = _settings.phases
-                                                    if vc.get("min_amps") is None and vc.get("min_charge_amps") is None:
-                                                        vc["min_amps"] = _settings.min_charge_amps
-                                                    if vc.get("max_amps") is None and vc.get("max_charge_amps") is None:
-                                                        vc["max_amps"] = _settings.max_charge_amps
-                                                    if vc.get("voltage") is None:
-                                                        vc["voltage"] = _settings.voltage
-                                                    if vc.get("charger_status_entity") is None:
-                                                        vc["charger_status_entity"] = _settings.charger_status_entity
-                                                    break
-                                except Exception:
-                                    pass
-                            if vc_phases is None:
-                                vc_phases = 1
+                            vc = dict(vc)
+                            vc_phases = vc.get("phases") or 1
+                            if vc_phases <= 1:
+                                # Older profiles can store three-phase charger
+                                # settings in Smart Schedule for this vehicle.
+                                executor = get_auto_schedule_executor()
+                                settings = (
+                                    executor._settings.get(vc.get("vehicle_id"))
+                                    if executor is not None else None
+                                )
+                                if settings is not None and settings.phases > 1:
+                                    vc_phases = settings.phases
+                                    if vc.get("min_amps") is None and vc.get("min_charge_amps") is None:
+                                        vc["min_amps"] = settings.min_charge_amps
+                                    if vc.get("max_amps") is None and vc.get("max_charge_amps") is None:
+                                        vc["max_amps"] = settings.max_charge_amps
+                                    if vc.get("voltage") is None:
+                                        vc["voltage"] = settings.voltage
+                                    if vc.get("charger_status_entity") is None:
+                                        vc["charger_status_entity"] = settings.charger_status_entity
 
                             # Determine charger_type: vehicle config > config entry > default
                             vc_charger_type = vc.get("charger_type")

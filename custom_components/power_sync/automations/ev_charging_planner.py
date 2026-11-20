@@ -843,6 +843,8 @@ async def get_ev_location(
 
     location = "unknown"
     specific_location_entity_unavailable = False
+    exact_location_reports: list[tuple[datetime | None, str]] = []
+    exact_home_presence = False
 
     # Zaptec standalone — charger is at home by definition
     if config_entry:
@@ -857,6 +859,25 @@ async def get_ev_location(
         if opts.get(CONF_OCPP_ENABLED):
             _LOGGER.debug("OCPP charger configured, assuming location=home")
             return "home"
+
+    def record_exact_location(state: Any, candidate: str) -> None:
+        nonlocal specific_location_entity_unavailable
+        reported_at = (
+            getattr(state, "last_reported", None)
+            or getattr(state, "last_updated", None)
+            or getattr(state, "last_changed", None)
+        )
+        if isinstance(reported_at, datetime):
+            if reported_at.tzinfo is None:
+                reported_at = reported_at.replace(tzinfo=timezone.utc)
+            if reported_at > datetime.now(timezone.utc):
+                if candidate == "home":
+                    specific_location_entity_unavailable = True
+                    return
+                reported_at = None
+        else:
+            reported_at = None
+        exact_location_reports.append((reported_at, candidate))
 
     # Method 0: Teslemetry Bluetooth - has real device_tracker with location
     import re
@@ -874,9 +895,11 @@ async def get_ev_location(
                     if loc_state and loc_state.state not in ("unavailable", "unknown", "None", None):
                         candidate_location = loc_state.state.lower()
                         _LOGGER.debug(f"Teslemetry BT location from {loc_entity}: {candidate_location}")
-                        if vehicle_vin is not None or candidate_location == "home":
+                        if vehicle_vin is not None:
+                            record_exact_location(loc_state, candidate_location)
+                        elif candidate_location == "home":
                             return candidate_location
-                        if location == "unknown":
+                        elif location == "unknown":
                             location = candidate_location
                     elif vehicle_vin is not None:
                         specific_location_entity_unavailable = True
@@ -886,9 +909,6 @@ async def get_ev_location(
     device_registry = dr.async_get(hass)
 
     for device, device_vin in _iter_tesla_vehicle_devices(device_registry):
-        if vehicle_vin is not None and location != "unknown":
-            break
-
         # If specific VIN requested, skip other vehicles
         if vehicle_vin is not None and device_vin != vehicle_vin:
             continue
@@ -905,7 +925,10 @@ async def get_ev_location(
                 if state and state.state not in ("unavailable", "unknown", "None", None):
                     candidate_location = state.state.lower()
                     _LOGGER.debug(f"Found EV location from {entity_id} (VIN: {device_vin}): {candidate_location}")
-                    if vehicle_vin is not None or candidate_location == "home":
+                    if vehicle_vin is not None:
+                        record_exact_location(state, candidate_location)
+                        continue
+                    if candidate_location == "home":
                         location = candidate_location
                     elif location == "unknown":
                         location = candidate_location
@@ -916,12 +939,36 @@ async def get_ev_location(
             elif entity_id.startswith("binary_sensor.") and "located_at_home" in entity_id_lower:
                 state = hass.states.get(entity_id)
                 if state and state.state == "on":
+                    if vehicle_vin is not None:
+                        exact_home_presence = True
+                        continue
                     location = "home"
                     _LOGGER.debug(f"Found EV at home from {entity_id} (VIN: {device_vin})")
                     break
 
         if vehicle_vin is None and location == "home":
             break
+
+    if exact_location_reports:
+        # Registry order does not indicate freshness. When an away report has
+        # no timestamp, there is no evidence a competing home report supersedes it.
+        untimed_away = next(
+            (zone for reported_at, zone in exact_location_reports
+             if reported_at is None and zone != "home"),
+            None,
+        )
+        if untimed_away is not None:
+            location = untimed_away
+        else:
+            earliest = datetime.min.replace(tzinfo=timezone.utc)
+            _, location = max(
+                exact_location_reports,
+                key=lambda report: (report[0] or earliest, report[1] != "home"),
+            )
+    elif exact_home_presence:
+        # The positive binary flag is a fallback for missing trackers. A
+        # republished flag alone does not supersede explicit geographic away.
+        location = "home"
 
     # Method 2 (fallback): Tesla BLE - only current presence/plug signals imply home.
     # Do not treat the charger switch entity merely existing as presence; HA keeps
@@ -1291,6 +1338,10 @@ async def is_ev_plugged_in(
     # Teslemetry below. Identity-safe mapping returns no prefix for ambiguous
     # multi-vehicle configurations, so another car's BLE state is never used.
     if vehicle_vin and not vehicle_vin.startswith("ble_"):
+        from .actions import _fresh_wall_connector_unplugged_at
+
+        if _fresh_wall_connector_unplugged_at(hass, config_entry, vehicle_vin) is not None:
+            return False
         for prefix in _configured_ble_prefixes(
             config_entry,
             vehicle_vin,
@@ -8188,10 +8239,7 @@ class AutoScheduleExecutor:
         force_max_rate: bool = False,
     ) -> bool:
         """Start dynamic charging after per-vehicle admission succeeds."""
-        from .actions import (
-            _action_start_ev_charging_dynamic,
-            _resolve_max_grid_import_kw,
-        )
+        from .actions import _action_start_ev_charging_dynamic
 
         failure = getattr(self, "_start_failure_state", {}).get(vehicle_id)
         if failure:
@@ -8277,13 +8325,6 @@ class AutoScheduleExecutor:
             include_target=control_battery_target,
         )
         target_battery_charge_kw = battery_params.get("target_battery_charge_kw", 0)
-        max_grid_import_kw = None
-        if control_battery_target:
-            max_grid_import_kw = await _resolve_max_grid_import_kw(
-                self.hass,
-                self.config_entry,
-                battery_params,
-            )
 
         if source == "solar_surplus":
             dynamic_mode = "solar_surplus"
@@ -8350,8 +8391,6 @@ class AutoScheduleExecutor:
                 source == "solar_surplus" and force_max_rate
             ),
         }
-        if max_grid_import_kw is not None:
-            params["max_grid_import_kw"] = max_grid_import_kw
         params = _with_configured_charger_entities(self.hass, params, opts, charger_type)
         if charger_type != "tesla":
             configured_vehicle_id = None if settings.vehicle_id == "_default" else settings.vehicle_id
@@ -10266,9 +10305,6 @@ def _get_optimizer_battery_params(
         if opt_coordinator and hasattr(opt_coordinator, '_config'):
             max_charge_kw = opt_coordinator._config.max_charge_w / 1000.0
             max_discharge_kw = opt_coordinator._config.max_discharge_w / 1000.0
-            max_grid_import_kw = float(
-                getattr(opt_coordinator._config, "max_grid_import_w", 0) or 0
-            ) / 1000.0
             params = {}
             if max_charge_kw > 0 and max_discharge_kw > 0:
                 params = {
@@ -10277,11 +10313,6 @@ def _get_optimizer_battery_params(
                 }
                 if include_target:
                     params["target_battery_charge_kw"] = max_charge_kw
-            # The optimizer's persisted import envelope must follow coordinated
-            # EV starts too.  Keep it separate from an explicit action limit:
-            # actions.py combines this source with any lower runtime safety cap.
-            if max_grid_import_kw > 0:
-                params["optimizer_max_grid_import_kw"] = max_grid_import_kw
             return params
     except Exception:
         pass
@@ -12554,9 +12585,18 @@ class ScheduledChargingExecutor:
                     results[vin]["reason"] = f"{blocked} owns this loadpoint"
                     continue
                 if modes and all(owner_family(mode) == "scheduled" for mode in modes):
-                    # Its dynamic controller owns restart/readback/retry policy.
-                    # Re-running start here would reset that controller.
-                    results[vin] = {"active": True, "reason": "Scheduled control active"}
+                    from .actions import _release_stopped_scheduled_tesla
+
+                    # Keep the current controller unless exact-vehicle telemetry
+                    # proves its remembered charging state is stale.
+                    if vin in self._pending_stops or not await _release_stopped_scheduled_tesla(
+                        self.hass, self.config_entry, vin,
+                    ):
+                        results[vin] = {"active": True, "reason": "Scheduled control active"}
+                    else:
+                        # Re-evaluate the price, schedule and battery on the next
+                        # cycle before issuing a fresh start after teardown.
+                        results[vin]["reason"] = "Vehicle stopped; Scheduled will recheck on the next cycle"
                     continue
                 if vin in self._pending_stops:
                     results[vin]["reason"] = "Previous stop unconfirmed; awaiting vehicle observation"

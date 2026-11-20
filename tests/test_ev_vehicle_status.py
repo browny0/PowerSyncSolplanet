@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import pin_power_sync_clock
+
 
 ROOT = Path(__file__).resolve().parent.parent / "custom_components"
 
@@ -3267,6 +3269,114 @@ def test_wall_connector_fresh_current_does_not_refresh_stale_power():
     assert vehicles[0]["ev_power_kw"] == 9.0
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_amps"),
+    [
+        ("fresh", 32),
+        ("stale", 0),
+        ("previous_connection", 0),
+        ("other_vin", 0),
+        ("unplugged", 0),
+        ("requested_current", 0),
+        ("duplicate_current", 0),
+        ("renamed_meter_in_milliamps", 32),
+    ],
+)
+def test_loadpoint_display_uses_measured_current_for_exact_wall_connector(
+    monkeypatch, scenario, expected_amps,
+):
+    import json
+
+    power_sync = _power_sync_module()
+    actions = importlib.import_module("power_sync.automations.actions")
+    monkeypatch.setattr(power_sync, "_configured_sigenergy_charger_state", lambda entry: None)
+
+    vin = "5YJTEST0000000001"
+    now = datetime.now(timezone.utc)
+    hass = _tesla_hass([
+        _State("sensor.primary_ev_charger_power", "7.59", {"unit_of_measurement": "kW"}, now),
+        _State("sensor.primary_ev_charging", "charging", last_updated=now),
+        _State("binary_sensor.primary_ev_charge_cable", "on", last_updated=now),
+        _State("device_tracker.primary_ev_location", "home", last_updated=now),
+    ])
+    serial = "GARAGE-CONNECTOR"
+    hass.device_registry.devices.update({
+        "local": SimpleNamespace(
+            id="local", name="Wall Connector", serial_number=serial,
+            identifiers={("tesla_wall_connector", serial)},
+        ),
+        "cloud": SimpleNamespace(
+            id="cloud", name="Wall Connector", serial_number=serial,
+            identifiers={("teslemetry", serial)},
+        ),
+    })
+    hass.device_registry.async_get = hass.device_registry.devices.get
+    connected = _State(
+        "binary_sensor.tesla_wall_connector_vehicle_connected_2",
+        "off" if scenario == "unplugged" else "on",
+        last_updated=now,
+    )
+    connected.last_changed = now - timedelta(seconds=10)
+    current_entity_id = {
+        "requested_current": "number.tesla_wall_connector_vehicle_current_2",
+        "renamed_meter_in_milliamps": "sensor.current_charging_garage",
+    }.get(scenario, "sensor.tesla_wall_connector_vehicle_current_2")
+    meter_in_ma = scenario == "renamed_meter_in_milliamps"
+    current = _State(
+        current_entity_id, "32000" if meter_in_ma else "32.0",
+        {"unit_of_measurement": "mA" if meter_in_ma else "A"},
+        last_updated=now,
+        last_reported=now - timedelta(minutes=5) if scenario == "stale"
+        else now - timedelta(seconds=20 if scenario == "previous_connection" else 1),
+    )
+    identity = _State(
+        "sensor.wall_connector_2_vehicle", "LGXTEST0000000002" if scenario == "other_vin" else vin,
+        last_updated=now,
+    )
+    power = _State(
+        "sensor.tesla_wall_connector_total_power_2", "7.59", {"unit_of_measurement": "kW"}, now,
+    )
+    for state, device, platform in (
+        (connected, "local", "tesla_wall_connector"),
+        (current, "local", "tesla_wall_connector"),
+        (power, "local", "tesla_wall_connector"),
+        (identity, "cloud", "teslemetry"),
+    ):
+        hass.states._states[state.entity_id] = state
+        entity = _entity(state.entity_id, device)
+        entity.platform = platform
+        if state is current and meter_in_ma:
+            entity.translation_key = "vehicle_current_a"
+        hass.entity_registry.entities[state.entity_id] = entity
+    if scenario == "duplicate_current":
+        duplicate = _State(
+            "sensor.tesla_wall_connector_vehicle_current_3",
+            "16.0", {"unit_of_measurement": "A"}, last_updated=now,
+        )
+        entity = _entity(duplicate.entity_id, "local")
+        entity.platform = "tesla_wall_connector"
+        hass.states._states[duplicate.entity_id] = duplicate
+        hass.entity_registry.entities[duplicate.entity_id] = entity
+
+    state = {
+        "active": True,
+        "current_amps": 0,
+        "target_amps": 0,
+        "reason": "Surplus: 10.4kW, Allocated: 10.4kW, Battery: 58%, Target: 32A",
+        "params": {"charger_type": "tesla", "vehicle_vin": vin, "voltage": 240, "phases": 1},
+    }
+    monkeypatch.setitem(actions._dynamic_ev_state, _Entry.entry_id, {vin: state})
+    with pin_power_sync_clock(power_sync, actions, utcnow=lambda: now):
+        response = asyncio.run(power_sync.EVLoadpointStatusView(hass, _Entry())._async_build_response(None))
+    payload = json.loads(response.body)
+    assert payload["success"] is True, payload
+    row = next(row for row in payload["loadpoints"] if row["vehicle_id"] == vin)
+    assert row["actual_charging"] is True
+    assert row["current_power_kw"] == 7.59
+    assert row["current_amps"] == row["target_amps"] == expected_amps
+    assert state["current_amps"] == state["target_amps"] == 0
+
+
 def test_wall_connector_current_does_not_merge_two_distinct_charging_vehicles():
     """Without an identity match, two active cars plus a meter stay distinct."""
     power_sync = _power_sync_module()
@@ -5382,6 +5492,90 @@ def test_manual_start_uses_healthy_suffixed_provider_for_same_vehicle(monkeypatc
     assert asyncio.run(view._is_vehicle_at_home(vin)) is True
     assert asyncio.run(view._is_vehicle_plugged_in(other_vin)) is False
     assert asyncio.run(view._is_vehicle_at_home(other_vin)) is False
+
+
+@pytest.mark.parametrize(
+    ("home_state", "tracker_state", "home_offset", "site_presence", "ready"),
+    [
+        pytest.param("off", "home", -60, "home", True, id="stale-away"),
+        pytest.param("on", "not_home", -60, "away", False, id="stale-home"),
+        pytest.param("on", "not_home", 0, "away", False, id="tied-away"),
+        pytest.param("on", "not_home", 60, "home", False, id="future-home-with-away"),
+        pytest.param("on", "unavailable", 60, "home", False, id="lone-future-home"),
+        pytest.param("unavailable", "not_home", -60, "away", False, id="sole-away"),
+        pytest.param("unavailable", "unknown", -60, None, True, id="legacy-unknown"),
+    ],
+)
+def test_manual_start_uses_current_exact_vin_site_presence(
+    monkeypatch, home_state, tracker_state, home_offset, site_presence, ready
+):
+    power_sync = _power_sync_module()
+    actions = importlib.import_module("power_sync.automations.actions")
+    monkeypatch.setattr(actions, "dr", power_sync.dr)
+    monkeypatch.setattr(actions, "er", power_sync.er)
+    vin, other_vin = "5YJTEST0000000001", "5YJTEST0000000002"
+    observed_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    devices = {
+        name: SimpleNamespace(id=name, name=name, identifiers={(provider, identity)})
+        for name, provider, identity in [
+            ("fleet", "tesla_fleet", vin),
+            ("teslemetry", "teslemetry", vin),
+            ("other", "teslemetry", other_vin),
+        ]
+    }
+    observations = [
+        ("fleet", "device_tracker.car_location", tracker_state, observed_at),
+        ("fleet", "binary_sensor.car_charge_cable", "on", observed_at),
+        (
+            "teslemetry",
+            "binary_sensor.car_located_at_home_2",
+            home_state,
+            observed_at + timedelta(seconds=home_offset),
+        ),
+        (
+            "other",
+            "device_tracker.other_location",
+            "home",
+            observed_at + timedelta(seconds=1),
+        ),
+    ]
+    entry = _Entry()
+    hass = _Hass(
+        [
+            _State(entity_id, state, last_updated=updated_at)
+            for _, entity_id, state, updated_at in observations
+        ],
+        {
+            entity_id: SimpleNamespace(
+                entity_id=entity_id,
+                device_id=device,
+                domain=entity_id.split(".", 1)[0],
+                platform=next(iter(devices[device].identifiers))[0],
+            )
+            for device, entity_id, _, _ in observations
+        },
+        devices,
+        entry_data={
+            "tesla_coordinator": SimpleNamespace(data={
+                "wall_connectors_raw": [{
+                    "wall_connector_state": 11,
+                    "wall_connector_power": 0,
+                    "vin": vin,
+                }],
+                "last_update": observed_at + timedelta(seconds=2),
+            }),
+        },
+        config_entries=[entry],
+    )
+
+    vehicles = power_sync._get_ev_vehicles_status(hass, entry)
+    vehicle = next(vehicle for vehicle in vehicles if vehicle["vehicle_id"] == vin)
+    assert vehicle.get("site_presence") == site_presence
+
+    view = power_sync.EVVehicleCommandView(hass)
+    assert asyncio.run(
+        view._loadpoint_ready_for_manual_start(vin, {"charger_type": "tesla"})
+    ) == (ready, "" if ready else "Vehicle is not at home")
 
 
 def test_manual_start_cannot_borrow_other_vehicles_ble_plug_cache():

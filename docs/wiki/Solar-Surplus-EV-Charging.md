@@ -13,16 +13,61 @@ immediately requests a stop for Solar Surplus sessions; other charging modes
 keep their own controls. A failed charger stop is logged, so an off switch is
 not confirmation that the physical charger stopped.
 
+For a Tesla Wall Connector with a local Home Assistant entry, PowerSync can
+match the connector's serial number to the vehicle reported by Tesla Fleet or
+Teslemetry. A fresh unplugged reading prevents a Solar Surplus start while
+older Tesla telemetry still shows the car connected. The matching connector's
+recent unplug can still be used if Tesla clears the charger’s vehicle identity
+first and PowerSync observed the plug session. A newer vehicle cable-on report
+lets PowerSync evaluate the next charge session.
+
+When the car reports stopped, an open contactor and fresh readings from the
+same Wall Connector let PowerSync distinguish standby draw from charging.
+Solar Surplus can then start the car when the configured conditions are met.
+
+While Solar Surplus is waiting for the home battery to reach its minimum, it
+can request a stop if the Tesla starts charging on plug-in. This requires
+PowerSync control of that vehicle and fresh, matching charging state and power.
+The hands-off external charging setting continues to leave those sessions alone.
+
+If Home Assistant has more than one location tracker for the same Tesla,
+PowerSync uses the latest report for that car when deciding whether it is home.
+
 The setting survives restarts and stays synchronized with app changes. It is
 off by default on installations without a saved Solar Surplus setting and is
 unavailable while automation storage is not ready. Configure your EVs and
 chargers before enabling it.
+
+In the mobile app, use **Solar Charging** in a vehicle's charging settings to
+include that vehicle in automatic Solar Surplus. Turning it off ends the
+vehicle's Solar Surplus session on the next control update. Check the vehicle
+or charger power reading to confirm charging has stopped.
 
 ```yaml
 action: switch.turn_on
 target:
   entity_id: switch.power_sync_solar_surplus_ev_charging
 ```
+
+### Tesla Start waiting for fresh charging data
+
+While Solar Surplus remains eligible, PowerSync waits at least five minutes
+between Tesla Start recovery attempts. A retry requires the configured sustained
+surplus. PowerSync clears the pending state when fresh vehicle data confirms
+charging or when the plan ends. A Tesla can come online before its next fresh
+charging-state report arrives.
+
+For a Tessie recovery already bound to the car in Home Assistant, PowerSync can
+use that car's Wake button. It checks for a new charging-state report from the
+same car before attempting Start.
+
+During charging, Solar Surplus tracks the current it sent after Home
+Assistant's Tesla current limit. If that limit rises and surplus still
+supports a higher current, PowerSync can request the increase.
+
+When Tesla Fleet and Teslemetry report different locations for the same car,
+manual charging checks the newest report. If equally recent reports disagree,
+an away report blocks the request.
 
 ### Battery-powered charging near zero grid flow
 
