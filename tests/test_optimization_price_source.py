@@ -837,6 +837,24 @@ def test_ev_integration_defaults_to_initial_config_data(opt_module):
     assert coordinator._ev_integration_enabled is True
 
 
+def test_current_solar_forecast_is_provider_neutral_and_fresh(opt_module):
+    now = datetime(2026, 5, 3, 8, 30, tzinfo=timezone.utc)
+    opt_module.dt_util.now = lambda: now
+    coordinator = object.__new__(opt_module.OptimizationCoordinator)
+    coordinator._last_solar_forecast = [4.25, 2.0]
+    coordinator._last_update_time = now
+    coordinator._config = SimpleNamespace(interval_minutes=5)
+
+    assert coordinator.get_current_solar_forecast_kw() == 4.25
+
+    coordinator._last_update_time = now - timedelta(minutes=11)
+    assert coordinator.get_current_solar_forecast_kw() is None
+
+    coordinator._last_update_time = now
+    coordinator._last_solar_forecast = [float("nan")]
+    assert coordinator.get_current_solar_forecast_kw() is None
+
+
 def test_ev_load_subtraction_uses_monitoring_only_generic_charger_entity(opt_module):
     entry = SimpleNamespace(
         data={},

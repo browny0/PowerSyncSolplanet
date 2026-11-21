@@ -36,21 +36,33 @@ Existing `duration: Custom` discharge automations still resolve the saved custom
 
 ### Solplanet Home Assistant integration
 
-Select **Solplanet — via Solplanet Home Assistant integration** and configure
-the usable battery capacity plus maximum charge and discharge power. PowerSync
-uses the selected integration entry's battery, meter, work-mode, schedule
-power, and Schedule Configured entities. Battery power is treated as negative
-while charging and positive while discharging; grid power is positive while
+Select **Solplanet — via Solplanet Home Assistant integration** and enter the
+inverter AC capacity. PowerSync uses that value as both the maximum battery
+charge and discharge power. The optimizer battery capacity remains at its
+existing value (51.2 kWh by default for new entries). PowerSync uses the
+selected integration entry's battery, meter, work-mode, schedule power, and
+Schedule Configured entities. Battery power is treated as negative while
+charging and positive while discharging; grid power is positive while
 importing and negative while exporting. When no house-load sensor is available,
 PowerSync estimates load from solar, grid, and battery power.
 
+Set **Inverter AC capacity** to the inverter's total AC rating. On each
+PowerSync force-discharge update, battery discharge is capped to the lower of
+the requested discharge, that inverter capacity, and inverter AC capacity
+minus the current solar forecast. The forecast comes from PowerSync's own
+provider-neutral optimizer data, so it works with any supported forecast
+provider. A fresh forecast means the latest optimizer result is no older than
+two optimization intervals; without one, the requested discharge is retained.
+The cap has no additional safety margin.
+
 PowerSync requires the integration's **Replace Schedule Day** and
-**Clear Schedule** actions. A force
-charge/discharge replaces that day's complete slot list with the temporary
-slot, sets both `pin` and `pout` to the configured charge/discharge maximums,
-then selects Custom mode. On restore, PowerSync calls **Clear Schedule** with
-`day: all` and selects Self-consumption mode, removing schedule slots from every
-day. Update the Solplanet integration if either action is unavailable.
+**Clear Schedule** actions. A force charge/discharge replaces that day's
+complete slot list with the temporary slot, sets `pin` to the configured
+charge maximum and `pout` to the configured discharge maximum (or the
+forecast-aware discharge cap), then selects Custom mode. On restore, PowerSync
+calls **Clear Schedule** with `day: all` and selects Self-consumption mode,
+removing schedule slots from every day. Update the Solplanet integration if
+either action is unavailable.
 
 Temporary charge, discharge, and zero-power hold use the most recent half-hour
 boundary. Solplanet's integration restricts a slot to 1–4 whole hours and

@@ -12042,6 +12042,7 @@ class SolplanetEnergyCoordinator(
         battery_capacity_kwh: float = 51.2,
         max_charge_kw: float = 5.0,
         max_discharge_kw: float = 5.0,
+        inverter_ac_limit_kw: float = 10.0,
         entry_id: str = "",
     ) -> None:
         from .inverters.solplanet import SolplanetBatteryController
@@ -12053,6 +12054,7 @@ class SolplanetEnergyCoordinator(
             battery_capacity_kwh=battery_capacity_kwh,
             max_charge_kw=max_charge_kw,
             max_discharge_kw=max_discharge_kw,
+            inverter_ac_limit_kw=inverter_ac_limit_kw,
         )
         self._energy_acc = EnergyAccumulator(hass, "solplanet", entry_id)
         self._validated = False
@@ -12126,7 +12128,25 @@ class SolplanetEnergyCoordinator(
     async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
         if not self._native_control_allowed("Solplanet force_discharge"):
             return False
-        return await self._controller.force_discharge(duration_minutes, power_w)
+        return await self._controller.force_discharge(
+            duration_minutes,
+            power_w,
+            solar_forecast_kw=self._current_solar_forecast_kw(),
+        )
+
+    def _current_solar_forecast_kw(self) -> float | None:
+        """Read a fresh provider-neutral forecast from this entry's optimizer."""
+        domain_data = self.hass.data.get(DOMAIN, {})
+        runtime = (
+            domain_data.get(self._entry_id, {})
+            if isinstance(domain_data, dict)
+            else {}
+        )
+        if not isinstance(runtime, dict):
+            return None
+        optimizer = runtime.get("optimization_coordinator")
+        get_forecast = getattr(optimizer, "get_current_solar_forecast_kw", None)
+        return get_forecast() if callable(get_forecast) else None
 
     async def restore_normal(self) -> bool:
         if not self._native_control_allowed("Solplanet restore_normal"):

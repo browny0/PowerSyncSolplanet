@@ -611,11 +611,9 @@ DEFAULT_FRONIUS_RESERVA_MAX_DISCHARGE_KW = 5.0
 # Solplanet battery system — bridges via calvinbui/home-assistant-solplanet.
 CONF_SOLPLANET_CONFIG_ENTRY_ID = "solplanet_config_entry_id"
 CONF_SOLPLANET_BATTERY_CAPACITY_KWH = "solplanet_battery_capacity_kwh"
-CONF_SOLPLANET_MAX_CHARGE_KW = "solplanet_max_charge_kw"
-CONF_SOLPLANET_MAX_DISCHARGE_KW = "solplanet_max_discharge_kw"
+CONF_SOLPLANET_INVERTER_AC_LIMIT_KW = "solplanet_inverter_ac_limit_kw"
 DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH = 51.2
-DEFAULT_SOLPLANET_MAX_CHARGE_KW = 5.0
-DEFAULT_SOLPLANET_MAX_DISCHARGE_KW = 5.0
+DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW = 10.0
 
 # Neovolt / Bytewatt battery system — bridges via pvandenh/NeovoltBattery_ModbusPlugin
 # Install the neovolt integration from HACS first; PowerSync reads/writes its entities.
