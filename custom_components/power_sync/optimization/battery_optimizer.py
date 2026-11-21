@@ -72,6 +72,8 @@ MODE_PROJECTION_SELF_USE_ABS_TOL_KWH = 0.02
 # schedule matches Smart Schedule's start-of-window behavior. This is
 # deliberately tiny and is not applied to paid or non-grid source decisions.
 EV_EARLY_CHARGE_TIE_BREAK_PER_KWH_HOUR = 1e-6
+# Bound the total unattributed power per slot to 0.1 W after settlement.
+EV_SOURCE_ROUNDING_TOLERANCE_KW = 1e-4
 
 
 def _fallback_ev_slot_policy(
@@ -267,9 +269,8 @@ def _reconcile_ev_sources_to_schedule(
     schedule's house/solar/battery/grid balance.  Battery export is deliberately
     removed before battery-to-EV capacity is computed.
 
-    ``None`` means the final action cannot physically supply the planned EV
-    draw with the source support retained by the LP; callers must not silently
-    trim delivery or invent a source in that case.
+    Leave sub-watt settlement rounding unattributed. Return ``None`` if the
+    combined deficit exceeds that tolerance so callers can reject the plan.
     """
     vehicle_ids = list(ev_charge_by_vehicle_kw)
     n = max(
@@ -420,7 +421,7 @@ def _reconcile_ev_sources_to_schedule(
                 remaining[vehicle_id] -= allocated
                 budgets[source] -= allocated
 
-        if any(value > 1e-6 for value in remaining.values()):
+        if math.fsum(remaining.values()) > EV_SOURCE_ROUNDING_TOLERANCE_KW:
             return None
 
     return sources
@@ -1561,6 +1562,26 @@ class BatteryOptimizer:
                 import_bonus_prices=import_bonus_prices,
                 import_bonus_cap_kwh=import_bonus_cap_kwh,
             )
+            # The export finalizer only reconciles when it changes an action.
+            # Validate a joint greedy plan even when there were no tiny exports.
+            if (
+                result.solver_used == "greedy"
+                and plan is not None
+                and any(day is not None for day in plan.day_ids)
+                and any(action.ev_charge_w > 0 for action in result.schedule.actions)
+                and "ev_sources_reconciled_to_schedule" not in result.lp_stats
+            ):
+                result = self.reconcile_result_with_schedule(
+                    result, result.schedule, import_prices=import_prices,
+                    export_prices=export_prices, solar=solar_forecast,
+                    load=load_forecast, initial_soc=current_soc,
+                    cost_neutral_plan=plan, block_battery_charge=block_battery_charge,
+                    export_bonus_prices=export_bonus_prices,
+                    export_bonus_cap_kwh=export_bonus_cap_kwh,
+                    import_bonus_prices=import_bonus_prices,
+                    import_bonus_cap_kwh=import_bonus_cap_kwh,
+                    _suppress_micro_exports=False,
+                )
             if suppressed_export_slots:
                 result.lp_stats["cost_neutral_micro_export_suppressed_slots"] = max(
                     len(suppressed_export_slots),
@@ -6493,7 +6514,14 @@ class BatteryOptimizer:
         ev_source_kw_by_vehicle: dict[str, dict[str, list[float]]] = {}
         if ev_charge_active:
             for vehicle in range(n_ev_vehicles):
-                period_values = [x[ev_charge_var(vehicle, t)] for t in range(p_n)]
+                # HiGHS can leave trace power in an inactive period within
+                # its mixed-integer tolerance. The Cost Neutral source ledger
+                # must reconcile the draw of the emitted charging schedule.
+                period_values = [
+                    0.0 if cost_neutral_active and x[ev_on_var(vehicle, t)] < 0.5
+                    else x[ev_charge_var(vehicle, t)]
+                    for t in range(p_n)
+                ]
                 expanded = self._expand_period_values(periods, period_values, n)
                 vehicle_id = str(ev_plans_lp[vehicle].vehicle_id)
                 if vehicle_id in ev_charge_kw_by_vehicle:
@@ -10438,6 +10466,10 @@ class BatteryOptimizer:
         _suppress_micro_exports: bool = True,
     ) -> OptimizerResult:
         """Make result flows and economics describe the final emitted schedule."""
+        if result.lp_stats.get("ev_sources_reconciled_to_schedule") is False:
+            # A later coordinator overlay cannot re-authorize a rejected plan.
+            return result
+
         if cost_neutral_plan is None:
             cost_neutral_plan = CostNeutralPlan.from_legacy(
                 length=len(import_prices),
@@ -10845,18 +10877,40 @@ class BatteryOptimizer:
             if reconciled_sources is None:
                 _LOGGER.warning(
                     "Final schedule cannot physically reconcile EV source ledger; "
-                    "retaining the solver source columns and marking the result"
+                    "discarding the joint plan and using native self-consumption"
                 )
-                result.lp_stats["ev_sources_reconciled_to_schedule"] = False
-            else:
-                result.ev_source_by_vehicle_w = {
-                    vehicle_id: {
-                        source: [value * 1000 for value in series]
-                        for source, series in sources.items()
-                    }
-                    for vehicle_id, sources in reconciled_sources.items()
+                # Drop the unverified EV directives and rebuild flows from native
+                # operation. Keep independently forecast load in the input and
+                # let the next solve propose a fresh joint plan.
+                hold = self._solve_self_consumption_hold(
+                    n, import_prices, export_prices, solar, load,
+                    initial_soc if initial_soc is not None else 0.0,
+                    cost_function="cost", block_battery_charge=block_battery_charge,
+                    allow_grid_charge=False, disable_idle=True,
+                    schedule_timestamps=[
+                        action.timestamp for action in schedule.actions[:n]
+                    ],
+                    export_bonus_prices=export_bonus_prices,
+                    export_bonus_cap_kwh=export_bonus_cap_kwh,
+                    import_bonus_prices=import_bonus_prices,
+                    import_bonus_cap_kwh=import_bonus_cap_kwh,
+                )
+                hold.solve_time_s = result.solve_time_s
+                hold.lp_stats = {
+                    key: result.lp_stats[key]
+                    for key in ("fallback_reason", "error", "message")
+                    if key in result.lp_stats
                 }
-                result.lp_stats["ev_sources_reconciled_to_schedule"] = True
+                hold.lp_stats["ev_sources_reconciled_to_schedule"] = False
+                return hold
+            result.ev_source_by_vehicle_w = {
+                vehicle_id: {
+                    source: [value * 1000 for value in series]
+                    for source, series in sources.items()
+                }
+                for vehicle_id, sources in reconciled_sources.items()
+            }
+            result.lp_stats["ev_sources_reconciled_to_schedule"] = True
         else:
             # Non-Cost-Neutral EV attribution remains the solver/fallback
             # policy ledger; this reconciliation is only for the confirmed

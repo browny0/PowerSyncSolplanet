@@ -1,7 +1,7 @@
-<!-- release: v2.12.1777 -->
+<!-- release: v2.12.1781 -->
 
-## Switch-only charging in Price Level
+## Cost Neutral charging with two EVs
 
-If your inverter already reduces battery charging as household demand rises, enable **Prioritise switch-only charging in Price Level** in PowerSync's **EV Charging** options. It applies when Price Level allows grid import and phase-aware EV load management is off. PowerSync still checks measured grid import and the EV plan before keeping the charger on or resuming it at full rate.
+PowerSync now keeps valid charging plans when the solver leaves tiny rounding differences in the planned EV power. This avoids unnecessary fallback planning while preserving the checks that each car's planned draw has an eligible source.
 
 Update through HACS and restart Home Assistant.
