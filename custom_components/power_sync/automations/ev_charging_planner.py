@@ -10365,6 +10365,11 @@ def _has_current_disconnected_sigenergy_evac(
         entry_data.get("observed_sigenergy_charger_state_at")
     ):
         return False
+    return _is_disconnected_sigenergy_evac(observed)
+
+
+def _is_disconnected_sigenergy_evac(observed: Any) -> bool:
+    """Require explicit EVAC disconnection with no contradictory power or status."""
     try:
         power_kw = float(getattr(observed, "power_kw", None))
     except (TypeError, ValueError):
@@ -11622,6 +11627,15 @@ class PriceLevelChargingExecutor:
         await self.apply_preserve_home_battery(preserve_charging, reason)
         return decision
 
+    def reconcile_evac_unplug(self, loadpoint_id: str) -> None:
+        """Retire this executor's flag after verified dynamic unplug cleanup."""
+        state = self._vehicle_states.get(loadpoint_id)
+        if state and not state.start_pending and not state.stop_pending:
+            state.is_charging = False
+            state.charging_mode = ""
+            state.last_decision = "unplugged"
+            state.last_decision_reason = "Vehicle not plugged in"
+
     def _has_current_non_tesla_charge(self, loadpoint_id: str) -> bool:
         """Read exact configured charger telemetry; switch-on is not delivered power."""
         return _has_current_non_tesla_charge(
@@ -11630,7 +11644,7 @@ class PriceLevelChargingExecutor:
             loadpoint_id,
         )
 
-    def _zaptec_cached_charge_state(self) -> Optional[bool]:
+    def _zaptec_cached_charge_state(self, *, require_power_draw: bool = False) -> Optional[bool]:
         """Return exact cached Zaptec charging state, or None when unknown."""
         from ..zaptec_state import cached_zaptec_charge_state
         entry_data = (
@@ -11638,13 +11652,13 @@ class PriceLevelChargingExecutor:
             .get(self.config_entry.entry_id, {})
             or {}
         )
-        return cached_zaptec_charge_state(entry_data, now=time.monotonic())
+        return cached_zaptec_charge_state(
+            entry_data, now=time.monotonic(), require_power_draw=require_power_draw,
+        )
 
-    def _zaptec_cached_is_charging(self) -> bool:
-        """Return current Zaptec charging evidence from the exact configured charger."""
-        return self._zaptec_cached_charge_state() is True
-
-    def _zaptec_cached_readback_after(self, boundary: float) -> Optional[bool]:
+    def _zaptec_cached_readback_after(
+        self, boundary: float, *, require_power_draw: bool = False,
+    ) -> Optional[bool]:
         """Return cached state only when its poll began after ``boundary``."""
         from ..zaptec_state import cached_zaptec_charge_state
         if not boundary:
@@ -11654,7 +11668,10 @@ class PriceLevelChargingExecutor:
             .get(self.config_entry.entry_id, {})
             or {}
         )
-        return cached_zaptec_charge_state(entry_data, now=time.monotonic(), after=boundary)
+        return cached_zaptec_charge_state(
+            entry_data, now=time.monotonic(), after=boundary,
+            require_power_draw=require_power_draw,
+        )
 
     def _tracked_zaptec_vehicle_ids(self) -> list[str]:
         """Retain physical command obligations independently of discovery rows."""
@@ -11693,14 +11710,13 @@ class PriceLevelChargingExecutor:
             f"Zaptec standalone decision: should_charge={should_charge}, reason={reason}"
         )
 
-        # A current-limit acknowledgement is only a pending start.
+        # A current-limit or Resume acknowledgement is only a pending start.
         # Promote it to physical charging only after fresh Zaptec
         # telemetry says the charger is drawing power.
-        start_readback = (
-            self._zaptec_cached_readback_after(vehicle_state.start_requested_at)
-            if vehicle_state.start_requested_at else zaptec_charge_state
-        )
-        if vehicle_state.start_pending and start_readback is True:
+        start_readback = self._zaptec_cached_readback_after(
+            vehicle_state.start_requested_at, require_power_draw=True,
+        ) if vehicle_state.start_pending else None
+        if start_readback is True:
             vehicle_state.start_pending = False
             vehicle_state.is_charging = True
             vehicle_state.last_decision = "charging"
@@ -12254,7 +12270,7 @@ class PriceLevelChargingExecutor:
                 self.hass, self._domain, self.config_entry, opts, vehicle_vin=vehicle_vin,
             ).get("charger_type") == "zaptec"
             and not state.start_pending and not state.stop_pending
-            and self._zaptec_cached_charge_state() is False
+            and self._zaptec_cached_charge_state(require_power_draw=True) is not True
         )
         # is_charging also retains executor ownership while recovery is armed.
         # Changing it here would make each eligible cycle replace the session

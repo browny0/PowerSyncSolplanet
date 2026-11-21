@@ -3055,6 +3055,9 @@ class _ZaptecClient:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
+    async def validate_charger_installation(self, charger_id: str, installation_id: str) -> bool:
+        return (charger_id, installation_id) == ("charger-1", "installation-1")
+
     async def set_installation_current(self, installation_id: str, amps: int):
         self.calls.append(("set_installation_current", installation_id, amps))
 
@@ -3138,6 +3141,21 @@ def _zaptec_hass(cached_state: dict):
         "zaptec_cached_state": cached_state,
     })
     return hass, client
+
+
+def test_zaptec_current_refuses_saved_installation_for_another_charger():
+    zaptec_api = importlib.import_module("power_sync.zaptec_api")
+    client = zaptec_api.ZaptecCloudClient("user@example.invalid", "unused")
+    client._request = AsyncMock(return_value={"id": "charger-1", "installationId": "installation-1"})
+    hass, _ = _zaptec_hass({})
+    hass.data["power_sync"]["entry-1"]["zaptec_client"] = client
+
+    result = asyncio.run(actions._set_zaptec_charging_amps(
+        hass, _zaptec_entry("installation-2"), 16,
+    ))
+
+    assert result is False
+    client._request.assert_awaited_once_with("GET", "/api/chargers/charger-1")
 
 
 def _install_solar_surplus_runtime_stubs(
@@ -9654,6 +9672,129 @@ def test_dynamic_update_restarts_stopped_tesla_with_stale_commanded_amps(
     assert state["charging_started"] is True
 
 
+@pytest.mark.parametrize(
+    "evidence, should_restart",
+    [
+        ("stale_fleet", True),
+        ("conflicting_fleet", False),
+        ("positive_draw", False),
+        ("stale_stopped", False),
+        ("other_vehicle", False),
+        ("no_draw_reading", False),
+        ("start_not_settled", False),
+        ("writable_limit_only", False),
+    ],
+)
+def test_smart_schedule_restart_with_duplicate_tesla_providers(
+    monkeypatch, evidence, should_restart,
+):
+    vehicle_id = "5YJTEST00000000R4"
+    other_vehicle_id = "5YJTEST00000000R5"
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(actions.dt_util, "utcnow", lambda: now)
+    started_at = now - timedelta(minutes=5)
+    if evidence == "start_not_settled":
+        started_at = now - timedelta(seconds=30)
+    fleet_at = (
+        now - timedelta(seconds=10)
+        if evidence == "conflicting_fleet" else now - timedelta(minutes=4)
+    )
+    stopped_at = (
+        now - timedelta(minutes=2)
+        if evidence == "stale_stopped" else now - timedelta(seconds=15)
+    )
+    fleet = SimpleNamespace(id="fleet", identifiers={("tesla_fleet", vehicle_id)})
+    teslemetry = SimpleNamespace(
+        id="teslemetry",
+        identifiers={(
+            "teslemetry",
+            other_vehicle_id if evidence == "other_vehicle" else vehicle_id,
+        )},
+    )
+    states = [
+        _State(
+            "sensor.car_charging", "charging", last_updated=fleet_at, last_reported=now,
+        ),
+        _State("sensor.car_charging_2", "stopped", last_updated=stopped_at),
+    ]
+    if evidence not in {"no_draw_reading", "writable_limit_only"}:
+        states.append(_State(
+            "sensor.car_charger_power_2", "0", {"unit_of_measurement": "kW"},
+            last_updated=now - timedelta(seconds=10),
+        ))
+    if evidence == "writable_limit_only":
+        states.append(_State(
+            "number.car_charge_current_2", "0", {"unit_of_measurement": "A"},
+            last_updated=now - timedelta(seconds=5),
+        ))
+    if evidence == "positive_draw":
+        states.append(_State(
+            "sensor.car_charger_current", "16", {"unit_of_measurement": "A"},
+            last_updated=now - timedelta(seconds=5),
+        ))
+    hass = _Hass(
+        states,
+        registry_entities={
+            sample.entity_id: SimpleNamespace(
+                entity_id=sample.entity_id,
+                device_id=teslemetry.id if sample.entity_id.endswith("_2") else fleet.id,
+            )
+            for sample in states
+        },
+        registry_devices={fleet.id: fleet, teslemetry.id: teslemetry},
+    )
+    entry = _Entry()
+    status_entity = asyncio.run(actions._get_tesla_ev_entity(
+        hass, r"sensor\..*_(?:charging|charging_state)(?:_\d+)?$", vehicle_id,
+    ))
+    assert status_entity == "sensor.car_charging"
+    state = {
+        "active": True,
+        "charging_started": True,
+        "current_amps": 32,
+        "target_amps": 32,
+        "last_start_command_at": started_at,
+        "params": {
+            "dynamic_mode": "battery_target",
+            "owner_mode": "smart_schedule",
+            "charger_type": "tesla",
+            "vehicle_vin": vehicle_id,
+            "tesla_charging_state_entity": status_entity,
+            "reserve_battery_charge": False,
+            "min_charge_amps": 1,
+            "max_charge_amps": 32,
+            "target_battery_charge_kw": 0,
+            "max_grid_import_kw": 12.5,
+            "voltage": 230,
+            "phases": 1,
+        },
+    }
+    actions._dynamic_ev_state[entry.entry_id] = {vehicle_id: state}
+    start_calls = AsyncMock(return_value=True)
+    rate_calls = AsyncMock(return_value=True)
+    monkeypatch.setattr(actions, "_action_start_ev_charging", start_calls)
+    monkeypatch.setattr(actions, "_set_vehicle_amps", rate_calls)
+    monkeypatch.setattr(actions, "_release_dynamic_tesla_if_away", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "_clear_ble_dynamic_session_if_unplugged", AsyncMock(return_value=False))
+    monkeypatch.setattr(actions, "_refresh_dynamic_tesla_charger_capability", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "_get_tesla_live_status", AsyncMock(return_value={
+        "battery_power": 0, "grid_power": 0, "solar_power": 0,
+        "load_power": 0, "ev_power": 0, "battery_soc": 50,
+    }))
+    monkeypatch.setattr(actions, "_optimizer_planned_ev_charge_kw", lambda *args, **kwargs: 7.36)
+
+    asyncio.run(actions._dynamic_ev_update(hass, entry, entry.entry_id, vehicle_id))
+
+    if should_restart:
+        start_calls.assert_awaited_once()
+        rate_calls.assert_awaited_once()
+        start_params = start_calls.await_args.args[2]
+        assert start_params["vehicle_vin"] == vehicle_id
+        assert start_params["amps"] == 32
+    else:
+        start_calls.assert_not_awaited()
+
+
 @pytest.mark.parametrize("deadline", [False, True])
 def test_dynamic_multi_tesla_restarts_only_stopped_owned_loadpoint(monkeypatch, deadline):
     """Two Wall Connector sessions reconcile their own VIN telemetry."""
@@ -10079,6 +10220,70 @@ def test_dynamic_update_clears_unplugged_ble_session(monkeypatch):
         hass.data["power_sync"]["entry-1"]["ev_last_command"]["ble_ble_slater"]["reason"]
         == "vehicle unplugged"
     )
+
+
+@pytest.mark.parametrize(
+    ("confirmed", "owner_mode", "same_entry", "reconciled"),
+    [
+        (True, "price_level_opportunity", True, True),
+        (False, "price_level_opportunity", True, False),
+        (True, "solar_surplus", True, False),
+        (True, "price_level_opportunity", False, False),
+    ],
+)
+def test_evac_unplug_cleanup_notifies_only_its_price_level_executor(
+    monkeypatch, confirmed, owner_mode, same_entry, reconciled,
+):
+    hass = _Hass([])
+    entry = _Entry()
+    vehicle_id = "sigenergy_charger"
+    planner = types.ModuleType("power_sync.automations.ev_charging_planner")
+    planner.is_ev_plugged_in = AsyncMock(return_value=False)
+    observed = object() if confirmed else None
+    controller = types.SimpleNamespace(
+        read_state=AsyncMock(return_value=observed), disconnect=AsyncMock(),
+    )
+    create_controller = Mock(return_value=controller)
+    monkeypatch.setattr(actions, "_new_sigenergy_charger", create_controller)
+    planner._is_disconnected_sigenergy_evac = lambda state: state is not None
+    reconcile = Mock()
+    planner.get_price_level_executor = lambda: types.SimpleNamespace(
+        hass=hass, config_entry=entry if same_entry else _Entry(),
+        reconcile_evac_unplug=reconcile,
+    )
+    monkeypatch.setitem(sys.modules, planner.__name__, planner)
+    params = {
+        "charger_type": "sigenergy", "owner_mode": owner_mode,
+        "sigenergy_charger_host": "192.0.2.10", "sigenergy_charger_port": 1502,
+        "sigenergy_charger_slave_id": 7, "sigenergy_charger_type": "evac",
+    }
+    state = {"active": True, "params": params}
+    monkeypatch.setattr(
+        actions, "_dynamic_ev_state", {entry.entry_id: {vehicle_id: state}},
+    )
+
+    async def unplug():
+        return await actions._clear_ble_dynamic_session_if_unplugged(
+            hass, entry, vehicle_id, params, expected_state=state,
+        )
+
+    assert not asyncio.run(unplug())
+    reconcile.assert_not_called()
+    cleaned_up = confirmed or owner_mode != "price_level_opportunity"
+    assert asyncio.run(unplug())
+    assert bool(actions._dynamic_ev_state) is not cleaned_up
+    if owner_mode == "price_level_opportunity":
+        create_controller.assert_called_once_with({
+            "host": "192.0.2.10", "port": 1502, "slave_id": 7, "charger_type": "evac",
+        })
+        controller.read_state.assert_awaited_once()
+    else:
+        create_controller.assert_not_called()
+    assert hass.services.calls == []
+    if reconciled:
+        reconcile.assert_called_once_with(vehicle_id)
+    else:
+        reconcile.assert_not_called()
 
 
 def test_dynamic_update_keeps_plugged_ble_session(monkeypatch):
@@ -12983,14 +13188,57 @@ def test_zaptec_waiting_start_records_pending_authorization():
     assert params["_zaptec_pending_start"] is True
 
 
+def test_zaptec_charging_mode_at_zero_watts_arms_instead_of_reporting_started():
+    hass, client = _zaptec_hass({
+        "charger_operation_mode": "charging", "total_charge_power_w": 0,
+        "phase_a_current": 0, "phase_b_current": 0, "phase_c_current": 0,
+    })
+    params = {"charger_type": "zaptec"}
+
+    assert asyncio.run(actions._action_start_ev_charging(
+        hass, _zaptec_entry("installation-1"), params,
+    ))
+    assert client.calls == [("set_installation_current", "installation-1", 16)]
+    assert params["_zaptec_pending_start"] is True
+
+
+@pytest.mark.parametrize("mode,scheduled", [("connected_finished", False), ("charging_paused", True)])
+def test_zaptec_resume_avoids_finished_and_scheduled_sessions(mode, scheduled):
+    hass, client = _zaptec_hass({
+        "charger_operation_mode": mode, "total_charge_power_w": 0,
+        "cable_locked": True, "schedule_active": scheduled,
+    })
+
+    assert not asyncio.run(actions._action_start_ev_charging(
+        hass, _zaptec_entry("installation-1"), {"charger_type": "zaptec", "amps": 16},
+    ))
+    assert client.calls == []
+
+
+def test_zaptec_waiting_stop_does_not_ignore_phase_current():
+    hass, client = _zaptec_hass({
+        "charger_operation_mode": "connected_waiting", "total_charge_power_w": 0,
+        "phase_a_current": 12,
+    })
+
+    assert asyncio.run(actions._action_stop_ev_charging(
+        hass, _zaptec_entry("installation-1"), {"charger_type": "zaptec"},
+    ))
+    assert client.calls == [("deauthorize_and_stop", "charger-1")]
+
+
 def test_zaptec_resume_reuses_only_freshly_verified_unchanged_allocation(monkeypatch):
     zaptec_api = importlib.import_module("power_sync.zaptec_api")
     clock = [10000.0]
-    monkeypatch.setattr(zaptec_api, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(
+        zaptec_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]),
+    )
     client = zaptec_api.ZaptecCloudClient("user@example.com", "password")
-    client._request = AsyncMock(side_effect=[{}, {
-        "availableCurrentPhase1": 16, "availableCurrentPhase2": 16, "availableCurrentPhase3": 16,
-    }, {}])
+    client._request = AsyncMock(side_effect=[
+        {}, {"id": "charger-1", "installationId": "installation-1"},
+        {"availableCurrentPhase1": 16, "availableCurrentPhase2": 16, "availableCurrentPhase3": 16},
+        {},
+    ])
     hass, _ = _zaptec_hass({"charger_operation_mode": "charging_paused", "cable_locked": True})
     hass.data["power_sync"]["entry-1"]["zaptec_client"] = client
 
@@ -13002,6 +13250,7 @@ def test_zaptec_resume_reuses_only_freshly_verified_unchanged_allocation(monkeyp
     asyncio.run(replay())
     assert [(call.args[0], call.args[1]) for call in client._request.await_args_list] == [
         ("POST", "/api/installation/installation-1/update"),
+        ("GET", "/api/chargers/charger-1"),
         ("GET", "/api/installation/installation-1"),
         ("POST", "/api/chargers/charger-1/SendCommand/507"),
     ]
@@ -13063,7 +13312,9 @@ def test_zaptec_dynamic_rate_rejection_keeps_acknowledged_current_and_retries(mo
     """A three-phase rate drop must recover after the installation cooldown."""
     zaptec_api = importlib.import_module("power_sync.zaptec_api")
     clock = [10000.0]
-    monkeypatch.setattr(zaptec_api, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(
+        zaptec_api, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0]),
+    )
     client = zaptec_api.ZaptecCloudClient("user@example.com", "password")
     client._request = AsyncMock(return_value={})
     hass, _ = _zaptec_hass({"charger_operation_mode": "charging"})
@@ -13096,7 +13347,9 @@ def test_zaptec_dynamic_rate_rejection_keeps_acknowledged_current_and_retries(mo
     actions._dynamic_ev_state["entry-1"] = {"zaptec_standalone": state}
 
     async def replay():
-        await client.set_installation_current("installation-1", 11)
+        client._request.return_value = {"Id": "charger-1", "InstallationId": "installation-1"}
+        assert await actions._set_zaptec_charging_amps(hass, entry, 11)
+        client._request.return_value = {}
         client._request.reset_mock()
         for grid_w in (14100, 14300, 6100):
             clock[0] += 30
@@ -13123,7 +13376,10 @@ def test_zaptec_dynamic_rate_rejection_keeps_acknowledged_current_and_retries(mo
 
 
 def test_zaptec_idle_stop_is_passive_success():
-    hass, client = _zaptec_hass({"charger_operation_mode": "connected_waiting"})
+    hass, client = _zaptec_hass({
+        "charger_operation_mode": "connected_waiting",
+        "total_charge_power_w": 0,
+    })
 
     result = asyncio.run(
         actions._action_stop_ev_charging(
@@ -13768,9 +14024,11 @@ def test_sigenergy_evdc_solar_surplus_uses_dynamic_rate_when_entity_detected(mon
 def test_dynamic_stop_notification_requires_physical_confirmation(
     monkeypatch, stop_result
 ):
-    """Controller teardown must not announce a stop before its actuator result."""
+    """Stop notifications wait for the actuator result at a schedule boundary."""
     vehicle_id = "5YJTEST00000000A1"
     events: list[object] = []
+    hass = _Hass([])
+    hass.bus = SimpleNamespace(async_fire=lambda name, data: events.append((name, data)))
 
     async def physical_stop(*_args, **_kwargs):
         events.append("physical_stop")
@@ -13787,7 +14045,7 @@ def test_dynamic_stop_notification_requires_physical_confirmation(
             "active": True,
             "cancel_timer": lambda: events.append("cancel_timer"),
             "params": {
-                "owner_mode": "manual",
+                "owner_mode": "scheduled",
                 "dynamic_mode": "battery_target",
                 "charger_type": "tesla",
                 "vehicle_vin": vehicle_id,
@@ -13799,22 +14057,29 @@ def test_dynamic_stop_notification_requires_physical_confirmation(
 
     result = asyncio.run(
         actions._action_stop_ev_charging_dynamic(
-            _Hass([]),
+            hass,
             _Entry(),
             {
                 "vehicle_id": vehicle_id,
                 "stop_charging": True,
-                "stop_reason": "stopped",
+                "stop_reason": "Outside schedule (00:00-01:00)",
             },
         )
     )
 
     assert result is (True if stop_result else False)
     assert events.index("physical_stop") > events.index("cancel_timer")
-    pushes = [event for event in events if isinstance(event, tuple)]
+    pushes = [event for event in events if isinstance(event, tuple) and event[0] == "push"]
     assert bool(pushes) is bool(stop_result)
     if pushes:
         assert events.index(pushes[0]) > events.index("physical_stop")
+    alerts = [event for event in events if isinstance(event, tuple)
+              and event[0] == "power_sync_ev_stop_failed"]
+    assert len(alerts) == int(not stop_result)
+    if alerts:
+        assert events.index(alerts[0]) > events.index("physical_stop")
+        assert alerts[0][1]["record_type"] == "command"
+        assert alerts[0][1]["physical_confirmation"] is False
 
 
 def test_dynamic_time_window_stop_failure_does_not_announce_success(monkeypatch):

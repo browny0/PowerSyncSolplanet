@@ -1486,6 +1486,65 @@ async def _restart_owned_tesla(hass, entry, vehicle_id, state, amps):
     return bool(success)
 
 
+def _has_fresh_tesla_stop_evidence(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    vehicle_id: str,
+    params: Dict[str, Any],
+    started_at: Optional[datetime],
+) -> bool:
+    """Resolve a conflicting charging flag using the same VIN's fresh telemetry."""
+    at = dt_util.utcnow()
+    charging_observations: list[tuple[bool, Optional[float]]] = []
+    zero_draw_timestamps: list[float] = []
+    for entity_id in _tesla_start_confirmation_entity_ids(
+        hass, config_entry, vehicle_id, params,
+    ):
+        if not entity_id.startswith("sensor."):
+            continue
+        sample = hass.states.get(entity_id)
+        # A provider can repeatedly publish its cached value. Compare the
+        # state update time across sources, ignoring repeated HA reports.
+        observed_at = getattr(sample, "last_updated", None) or getattr(
+            sample, "last_changed", None,
+        )
+        if not is_current_ev_power_observation(observed_at, at=at) or (
+            started_at is not None and not _datetime_is_after(observed_at, started_at)
+        ):
+            continue
+        timestamp = _tesla_connection_observation_timestamp(sample)
+        if timestamp is None:
+            continue
+
+        if re.search(r"_(?:charging|charging_state|charge_state)(?:_\d+)?$", entity_id):
+            value = str(sample.state or "").strip().lower()
+            if value not in {"", "unknown", "unavailable", "none"}:
+                charging_observations.append((value == "stopped", timestamp))
+        elif re.search(
+            r"_(?:charger_current|charge_current|charging_current|charger_actual_current)(?:_\d+)?$",
+            entity_id,
+        ):
+            amps, error, _age = _phase_current_state_amps(sample)
+            if error is None:
+                if amps > 0.5:
+                    return False
+                zero_draw_timestamps.append(timestamp)
+        elif re.search(r"_(?:charger_power|charge_power|charging_power)(?:_\d+)?$", entity_id):
+            power_kw, available = _power_state_kw_reading(sample)
+            if available and float(sample.state) >= 0:
+                if power_kw > _ACTIVE_EV_POWER_EPSILON_KW:
+                    return False
+                zero_draw_timestamps.append(timestamp)
+
+    stopped, stopped_at = _reconcile_tesla_connection_observations(charging_observations)
+    if stopped is not True or stopped_at is None:
+        return False
+    return any(
+        timestamp >= stopped_at - TESLA_CONNECTION_CONFLICT_FRESHNESS_SECONDS
+        for timestamp in zero_draw_timestamps
+    )
+
+
 async def _reconcile_stopped_smart_schedule_tesla(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -1528,19 +1587,26 @@ async def _reconcile_stopped_smart_schedule_tesla(
             or params.get("charger_status_entity")
         ),
     )
-    if observed_amps is None or observed_amps > 0.5 or charging_state != "stopped":
+    if observed_amps is not None and observed_amps > 0.5:
         return False
-
+    if observed_amps is None or charging_state != "stopped":
+        if (
+            charging_state != "charging"
+            or not _is_explicit_tesla_vin(vehicle_id)
+            or not _has_fresh_tesla_stop_evidence(
+                hass, config_entry, vehicle_id, params, state.get("last_start_command_at"),
+            )
+        ):
+            return False
     state["physical_restart_required"] = True
     state["current_amps"] = 0
     state["target_amps"] = 0
     state["charging_started"] = False
     _LOGGER.warning(
-        "Dynamic EV: Tesla %s reports stopped at %.1fA while the Smart "
-        "Schedule controller still holds a %sA command; restarting the "
-        "active deadline session",
+        "Dynamic EV: Tesla %s reports stopped with near-zero draw while "
+        "Smart Schedule still holds a %sA command. Rechecking eligibility "
+        "for a restart.",
         vehicle_id,
-        observed_amps,
         current_amps,
     )
     return True
@@ -2251,19 +2317,7 @@ async def _read_sigenergy_charger_power_kw(
     if hass is None or str(params.get("charger_type") or "").lower() != "sigenergy":
         return None
 
-    config = _sigenergy_charger_config(config_entry, params)
-    if not config.get("host"):
-        return None
-
-    controller = _new_sigenergy_charger(config)
-    try:
-        state = await controller.read_state()
-    except Exception as err:
-        _LOGGER.debug("Solar surplus EV: Sigenergy charger power read failed: %s", err)
-        return None
-    finally:
-        await controller.disconnect()
-
+    state = await _read_dynamic_sigenergy_charger_state(config_entry, params)
     if state is None or state.power_kw is None:
         return None
     try:
@@ -2271,6 +2325,23 @@ async def _read_sigenergy_charger_power_kw(
     except (TypeError, ValueError):
         return None
 
+
+async def _read_dynamic_sigenergy_charger_state(
+    config_entry: ConfigEntry, params: Dict[str, Any],
+) -> Any:
+    """Read the same Sigenergy endpoint used by the dynamic session."""
+    config = _sigenergy_charger_config(config_entry, params)
+    if not config.get("host"):
+        return None
+
+    controller = _new_sigenergy_charger(config)
+    try:
+        return await controller.read_state()
+    except Exception as err:
+        _LOGGER.debug("Dynamic EV: Sigenergy charger state read failed: %s", err)
+        return None
+    finally:
+        await controller.disconnect()
 
 async def _wake_tesla_ev(
     hass: HomeAssistant,
@@ -9928,6 +9999,11 @@ async def _set_zaptec_charging_amps(
 
     target_amps = max(0, min(80, int(amps)))
     try:
+        if not await zaptec["client"].validate_charger_installation(
+            zaptec["charger_id"], installation_id,
+        ):
+            _LOGGER.warning("Zaptec set amps: configured installation could not be verified for this charger")
+            return False
         await zaptec["client"].set_installation_current(installation_id, target_amps)
         _LOGGER.info("Zaptec charger set to %dA", target_amps)
         return True
@@ -9943,6 +10019,8 @@ async def _start_zaptec_charging(
     params: Dict[str, Any] | None = None,
 ) -> bool:
     """Start Zaptec standalone charging with state-aware command selection."""
+    from ..zaptec_state import zaptec_power_draw
+
     zaptec = _get_zaptec_standalone(hass, config_entry)
     if not zaptec:
         _LOGGER.error("Zaptec start: standalone charger is not configured")
@@ -9950,19 +10028,17 @@ async def _start_zaptec_charging(
 
     cached_state = zaptec.get("cached_state") or {}
     charger_mode = str(_zaptec_state_value(cached_state, "charger_operation_mode", "")).lower()
-    try:
-        power_w = float(_zaptec_state_value(cached_state, "total_charge_power_w", 0) or 0)
-    except (TypeError, ValueError):
-        power_w = 0
-    cable_locked = bool(_zaptec_state_value(cached_state, "cable_locked", False))
-
-    if charger_mode not in ("connected_waiting", "charging") and power_w <= 50 and not cable_locked:
-        _LOGGER.warning("Zaptec start: vehicle is not plugged in")
+    drawing_power = zaptec_power_draw(cached_state) is True
+    waiting = charger_mode in ("connected_waiting", "charging")
+    if not drawing_power and (
+        cached_state.get("schedule_active") or not (waiting or charger_mode == "charging_paused")
+    ):
+        _LOGGER.info("Zaptec start deferred: charger mode %s is not startable", charger_mode or "unknown")
         return False
 
     target_amps = int(amps) if amps is not None else None
 
-    if charger_mode == "charging":
+    if drawing_power:
         if target_amps is not None:
             return await _set_zaptec_charging_amps(hass, config_entry, target_amps)
         _LOGGER.info("Zaptec charger is already charging")
@@ -9971,29 +10047,25 @@ async def _start_zaptec_charging(
     if params is not None and not await _run_pre_charge_wake_sequence(hass, params, "zaptec"):
         return False
 
-    if charger_mode == "connected_waiting":
+    if waiting:
         if not await _set_zaptec_charging_amps(hass, config_entry, target_amps or 16):
             _LOGGER.warning("Zaptec start: waiting charger could not be assigned current")
             return False
-        if params is not None:
-            # Setting installation current arms a waiting charger but does not
-            # prove that the vehicle has started drawing power.  Keep this
-            # attribution so a later price/SOC rejection can cancel the
-            # pending authorization instead of treating it as external.
-            params["_zaptec_pending_start"] = True
         _LOGGER.info("Zaptec charger waiting: set installation current instead of resume")
-        return True
+    else:
+        try:
+            if target_amps is not None and zaptec.get("installation_id"):
+                if not await _set_zaptec_charging_amps(hass, config_entry, target_amps):
+                    return False
+            await zaptec["client"].resume_charging(zaptec["charger_id"])
+            _LOGGER.info("Zaptec resume accepted; waiting for charger power")
+        except Exception as e:
+            _LOGGER.error("Zaptec start charging failed: %s", e)
+            return False
 
-    try:
-        if target_amps is not None and zaptec.get("installation_id"):
-            if not await _set_zaptec_charging_amps(hass, config_entry, target_amps):
-                return False
-        await zaptec["client"].resume_charging(zaptec["charger_id"])
-        _LOGGER.info("Zaptec charger resumed via Cloud API")
-        return True
-    except Exception as e:
-        _LOGGER.error("Zaptec start charging failed: %s", e)
-        return False
+    if params is not None:
+        params["_zaptec_pending_start"] = True
+    return True
 
 
 async def _stop_zaptec_charging(
@@ -10003,6 +10075,8 @@ async def _stop_zaptec_charging(
     pending_start: bool = False,
 ) -> bool:
     """Stop Zaptec standalone charging, treating already-idle states as success."""
+    from ..zaptec_state import zaptec_charge_state
+
     zaptec = _get_zaptec_standalone(hass, config_entry)
     if not zaptec:
         _LOGGER.error("Zaptec stop: standalone charger is not configured")
@@ -10010,40 +10084,22 @@ async def _stop_zaptec_charging(
 
     cached_state = zaptec.get("cached_state") or {}
     charger_mode = str(_zaptec_state_value(cached_state, "charger_operation_mode", "")).lower()
-    try:
-        power_w = float(_zaptec_state_value(cached_state, "total_charge_power_w", 0) or 0)
-    except (TypeError, ValueError):
-        power_w = 0
+    charge_state = zaptec_charge_state(cached_state)
+    if charge_state is False and (
+        not pending_start or charger_mode == "disconnected"
+    ):
+        _LOGGER.info("Zaptec charger already in %s mode, skipping stop command", charger_mode)
+        return True
+    if charge_state is None and not pending_start:
+        _LOGGER.warning("Zaptec stop could not verify charger state")
+        return False
 
-    if charger_mode == "connected_waiting" and power_w <= 50:
-        if not pending_start:
-            _LOGGER.info(
-                "Zaptec charger already in %s mode, skipping stop command",
-                charger_mode,
-            )
-            return True
-        try:
+    try:
+        if pending_start or charger_mode != "charging":
             await zaptec["client"].deauthorize_and_stop(zaptec["charger_id"])
-            _LOGGER.info("Zaptec pending session deauthorized and stopped via Cloud API")
-            return True
-        except Exception as e:
-            _LOGGER.error("Zaptec pending session cancellation failed: %s", e)
-            return False
-
-    if charger_mode == "disconnected" and power_w <= 50:
-        _LOGGER.info(
-            "Zaptec charger already in %s mode, skipping stop command",
-            charger_mode or "unknown",
-        )
-        return True
-
-    if charger_mode == "" and power_w <= 50 and not pending_start:
-        _LOGGER.info("Zaptec charger state is unknown, skipping stop command")
-        return True
-
-    try:
-        await zaptec["client"].stop_charging(zaptec["charger_id"])
-        _LOGGER.info("Zaptec charger stopped via Cloud API")
+        else:
+            await zaptec["client"].stop_charging(zaptec["charger_id"])
+        _LOGGER.info("Zaptec stop accepted by Cloud API")
         return True
     except Exception as e:
         _LOGGER.error("Zaptec stop charging failed: %s", e)
@@ -12696,8 +12752,9 @@ async def _clear_ble_dynamic_session_if_unplugged(
     ``state["consecutive_unplugged"]`` in the dynamic-session dict. A single
     unplugged read (which may just be a momentary cloud-telemetry gap) keeps the
     session; a plugged read resets the counter. BLE sessions (local plug read)
-    keep the original clear-on-first-read behavior. Returns True only on the
-    cycle that actually clears the session.
+    keep the original clear-on-first-read behavior. Return True when the
+    update must stop, including when the final EVAC check is inconclusive
+    and cleanup must wait for fresh evidence.
     """
     vehicle_vin = _dynamic_ev_vehicle_vin(vehicle_id, params)
     is_ble = bool(vehicle_vin) and str(vehicle_vin).startswith("ble_")
@@ -12744,19 +12801,41 @@ async def _clear_ble_dynamic_session_if_unplugged(
             )
             return False
 
+    from .ev_ownership import owner_family
+
+    price_level_evac = (
+        params.get("charger_type") == "sigenergy"
+        and params.get("sigenergy_charger_type", "evac") == "evac"
+        and owner_family(params.get("owner_mode")) == "price_level"
+    )
+    if price_level_evac:
+        from .ev_charging_planner import _is_disconnected_sigenergy_evac
+
+        read_started = datetime.now(dt_timezone.utc)
+        observed = await _read_dynamic_sigenergy_charger_state(config_entry, params)
+        if not (
+            is_current_ev_power_observation(read_started)
+            and _is_disconnected_sigenergy_evac(observed)
+        ):
+            return True
+        if _dynamic_ev_state.get(config_entry.entry_id, {}).get(vehicle_id) is not state:
+            return True
+
     _LOGGER.info(
         "⚡ Dynamic EV: clearing stale session for %s because vehicle is not "
         "plugged in",
         vehicle_id,
     )
+    stop_params = {
+        "vehicle_id": vehicle_id,
+        "stop_charging": False,
+        "stop_reason": "vehicle unplugged",
+    }
+    if price_level_evac:
+        stop_params["_expected_state"] = state
+        stop_params["_confirmed_evac_unplug"] = True
     await _action_stop_ev_charging_dynamic(
-        hass,
-        config_entry,
-        {
-            "vehicle_id": vehicle_id,
-            "stop_charging": False,
-            "stop_reason": "vehicle unplugged",
-        },
+        hass, config_entry, stop_params,
     )
     return True
 
@@ -20495,13 +20574,18 @@ async def _action_start_ev_charging_dynamic_locked(
         hass.data[DOMAIN][entry_id]["dynamic_ev_state"] = _dynamic_ev_state[entry_id]
 
     mode_label = "solar surplus" if dynamic_mode == "solar_surplus" else "battery target"
-    _LOGGER.info(f"⚡ Dynamic EV charging started ({mode_label} mode, vehicle={vehicle_id})")
+    zaptec_start_pending = full_params["zaptec_pending_start"]
+    _LOGGER.info(
+        "Dynamic EV charging %s (%s mode, vehicle=%s)",
+        "armed; waiting for charger power" if zaptec_start_pending else "started",
+        mode_label, vehicle_id,
+    )
 
     # Send push notification if enabled
     # For solar_surplus mode, skip the immediate notification — a notification will be
     # sent when charging actually starts (after conditions are met) in _dynamic_ev_update
     notify_on_start = params.get("notify_on_start", True)
-    if notify_on_start and dynamic_mode != "solar_surplus" and not transport_pending:
+    if notify_on_start and dynamic_mode != "solar_surplus" and not (transport_pending or zaptec_start_pending):
         try:
             # Look up vehicle name from VIN, fallback to param or truncated VIN
             vehicle_name = params.get("vehicle_name")
@@ -20807,6 +20891,17 @@ async def _action_stop_ev_charging_dynamic(
             )
             released_vehicle_ids.add(vid)
             del vehicles[vid]
+            if (
+                not stop_charging
+                and params.get("_confirmed_evac_unplug")
+                and state_params.get("charger_type") == "sigenergy"
+                and owner_family(state_owner) == "price_level"
+            ):
+                from .ev_charging_planner import get_price_level_executor
+
+                executor = get_price_level_executor()
+                if executor and executor.hass is hass and executor.config_entry is config_entry:
+                    executor.reconcile_evac_unplug(vid)
             _LOGGER.info(f"⚡ Dynamic EV charging stopped for {vid}")
 
     # Clean up entry if no vehicles remain
