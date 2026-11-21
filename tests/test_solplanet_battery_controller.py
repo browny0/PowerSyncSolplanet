@@ -332,6 +332,31 @@ def test_force_discharge_without_forecast_uses_requested_power():
     assert hass.services.calls[0][2]["pout"] == 10000
 
 
+def test_forecast_power_change_requests_schedule_refresh_only_when_limit_changes():
+    hass = _FakeHass()
+    controller = _controller(hass, inverter_ac_limit_kw=10)
+
+    assert asyncio.run(
+        controller.force_discharge(60, 8000, solar_forecast_kw=4)
+    )
+    assert controller.forecast_limited_discharge_power_changed(
+        8000,
+        solar_forecast_kw=4,
+    ) is False
+    assert controller.forecast_limited_discharge_power_changed(
+        8000,
+        solar_forecast_kw=4.1,
+    ) is False
+    assert controller.forecast_limited_discharge_power_changed(
+        8000,
+        solar_forecast_kw=7,
+    ) is True
+    assert controller.forecast_limited_discharge_power_changed(
+        8000,
+        solar_forecast_kw=None,
+    ) is True
+
+
 def test_temporary_slot_replaces_an_overlapping_existing_schedule():
     hass = _FakeHass()
     hass.states.get(
