@@ -16636,7 +16636,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             forecast_now_kw = max(0.0, float(solar_forecast[0]))
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, OverflowError, IndexError):
             return
         if not math.isfinite(forecast_now_kw):
             return
@@ -21661,6 +21661,41 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["battery_power_forecast"] = net_kw
 
         return data
+
+    def get_current_solar_forecast_kw(self) -> float | None:
+        """Return the current provider-neutral forecast when its optimizer run is fresh."""
+        forecast = getattr(self, "_last_solar_forecast", None)
+        updated_at = getattr(self, "_last_update_time", None)
+        if not forecast or not isinstance(updated_at, datetime):
+            return None
+        try:
+            current_kw = float(forecast[0])
+            now = dt_util.now()
+            now_utc = (
+                now.replace(tzinfo=timezone.utc)
+                if now.tzinfo is None
+                else now.astimezone(timezone.utc)
+            )
+            updated_utc = (
+                updated_at.replace(tzinfo=timezone.utc)
+                if updated_at.tzinfo is None
+                else updated_at.astimezone(timezone.utc)
+            )
+            age_seconds = (now_utc - updated_utc).total_seconds()
+            interval_minutes = max(
+                1,
+                int(getattr(self._config, "interval_minutes", 5) or 5),
+            )
+        except (TypeError, ValueError, IndexError):
+            return None
+        if (
+            not math.isfinite(current_kw)
+            or current_kw < 0
+            or age_seconds < 0
+            or age_seconds > 2 * interval_minutes * 60
+        ):
+            return None
+        return current_kw
 
     def _reserve_visibility(
         self,

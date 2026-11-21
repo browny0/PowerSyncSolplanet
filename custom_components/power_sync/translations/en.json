@@ -157,16 +157,12 @@
       },
       "solplanet_battery": {
         "title": "Solplanet battery connection",
-        "description": "PowerSync reads telemetry and uses the Solplanet integration's battery controls and schedule actions. Confirm the selected integration has one battery device and its main meter configured.",
+        "description": "PowerSync reads telemetry and uses the Solplanet integration's battery controls and schedule actions. Enter the inverter AC capacity; PowerSync uses it as both the battery charge and discharge power limit. Optimizer battery capacity remains at its default of 51.2 kWh.",
         "data": {
-          "solplanet_battery_capacity_kwh": "Battery capacity",
-          "solplanet_max_charge_kw": "Maximum charge power",
-          "solplanet_max_discharge_kw": "Maximum discharge power"
+          "solplanet_inverter_ac_limit_kw": "Inverter AC capacity"
         },
         "data_description": {
-          "solplanet_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the optimizer.",
-          "solplanet_max_charge_kw": "Maximum charge power in kW. Force-charge control is scheduled by the Solplanet integration.",
-          "solplanet_max_discharge_kw": "Maximum discharge power in kW. Force-discharge control is scheduled by the Solplanet integration."
+          "solplanet_inverter_ac_limit_kw": "Maximum combined PV and battery AC output in kW. Also used as the maximum battery charge and discharge power. PowerSync subtracts its current solar forecast before scheduling battery export."
         },
         "submit": "Connect"
       },
@@ -486,18 +482,12 @@
       },
       "solplanet_connection": {
         "title": "Solplanet connection",
-        "description": "Update the Solplanet integration entry and battery capacity and dispatch power limits.",
+        "description": "Adjust inverter AC capacity. PowerSync uses it as both the battery charge and discharge power limit and retains the Solplanet integration selected during setup.",
         "data": {
-          "solplanet_config_entry_id": "Solplanet integration",
-          "solplanet_battery_capacity_kwh": "Battery capacity",
-          "solplanet_max_charge_kw": "Maximum charge power",
-          "solplanet_max_discharge_kw": "Maximum discharge power"
+          "solplanet_inverter_ac_limit_kw": "Inverter AC capacity"
         },
         "data_description": {
-          "solplanet_config_entry_id": "The Solplanet integration entry to read battery and meter telemetry and send schedule controls through.",
-          "solplanet_battery_capacity_kwh": "Usable battery capacity in kWh. Used by the optimizer.",
-          "solplanet_max_charge_kw": "Maximum charge power in kW. Used to limit dispatch commands.",
-          "solplanet_max_discharge_kw": "Maximum discharge power in kW. Used to limit dispatch commands."
+          "solplanet_inverter_ac_limit_kw": "Maximum combined PV and battery AC output in kW. Also used as the maximum battery charge and discharge power. PowerSync subtracts its current solar forecast before scheduling battery export."
         },
         "submit": "Save"
       },

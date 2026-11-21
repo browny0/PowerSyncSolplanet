@@ -203,11 +203,9 @@ from .const import (
     NEOVOLT_SURPLUS_BALANCER_MODES,
     CONF_SOLPLANET_CONFIG_ENTRY_ID,
     CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-    CONF_SOLPLANET_MAX_CHARGE_KW,
-    CONF_SOLPLANET_MAX_DISCHARGE_KW,
+    CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
     DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
-    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
-    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
+    DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
     CONF_SOLAREDGE_HOST,
     CONF_SOLAREDGE_PORT,
     CONF_SOLAREDGE_SLAVE_ID,
@@ -5665,24 +5663,15 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
         errors: dict[str, str] = {}
         description_placeholders: dict[str, str] = {}
         if user_input is not None:
-            capacity_kwh = float(
+            inverter_ac_limit_kw = float(
                 user_input.get(
-                    CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-                    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                    CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                    DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
                 )
             )
-            max_charge_kw = float(
-                user_input.get(
-                    CONF_SOLPLANET_MAX_CHARGE_KW,
-                    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
-                )
-            )
-            max_discharge_kw = float(
-                user_input.get(
-                    CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
-                )
-            )
+            capacity_kwh = DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH
+            max_charge_kw = inverter_ac_limit_kw
+            max_discharge_kw = inverter_ac_limit_kw
             try:
                 from .inverters.solplanet import SolplanetBatteryController
 
@@ -5692,12 +5681,12 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
                     battery_capacity_kwh=capacity_kwh,
                     max_charge_kw=max_charge_kw,
                     max_discharge_kw=max_discharge_kw,
+                    inverter_ac_limit_kw=inverter_ac_limit_kw,
                 ).connect()
                 self._solplanet_data = {
                     CONF_SOLPLANET_CONFIG_ENTRY_ID: source_entry_id,
                     CONF_SOLPLANET_BATTERY_CAPACITY_KWH: capacity_kwh,
-                    CONF_SOLPLANET_MAX_CHARGE_KW: max_charge_kw,
-                    CONF_SOLPLANET_MAX_DISCHARGE_KW: max_discharge_kw,
+                    CONF_SOLPLANET_INVERTER_AC_LIMIT_KW: inverter_ac_limit_kw,
                 }
                 return self._create_final_entry()
             except ValueError as exc:
@@ -5718,36 +5707,12 @@ class PowerSyncConfigFlow(AmberSetupMixin, config_entries.ConfigFlow, domain=DOM
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-                        default=DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                        CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                        default=DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
                     ): NumberSelector(
                         NumberSelectorConfig(
                             min=1,
-                            max=200,
-                            step=0.1,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="kWh",
-                        )
-                    ),
-                    vol.Required(
-                        CONF_SOLPLANET_MAX_CHARGE_KW,
-                        default=DEFAULT_SOLPLANET_MAX_CHARGE_KW,
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.1,
-                            max=10,
-                            step=0.1,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="kW",
-                        )
-                    ),
-                    vol.Required(
-                        CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                        default=DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.1,
-                            max=10,
+                            max=250,
                             step=0.1,
                             mode=NumberSelectorMode.BOX,
                             unit_of_measurement="kW",
@@ -11831,7 +11796,7 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
     async def async_step_solplanet_connection(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Update Solplanet integration source and battery power settings."""
+        """Update Solplanet inverter capacity and derived battery power limits."""
         from .inverters.solplanet import SolplanetBatteryController
 
         solplanet_entries = self.hass.config_entries.async_entries("solplanet")
@@ -11842,26 +11807,33 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
         description_placeholders: dict[str, str] = {}
         if user_input is not None:
             selected_entry_id = str(
-                user_input.get(CONF_SOLPLANET_CONFIG_ENTRY_ID, "")
+                self._get_option(
+                    CONF_SOLPLANET_CONFIG_ENTRY_ID,
+                    self.config_entry.data.get(
+                        CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID, ""
+                    ),
+                )
             )
             capacity_kwh = float(
-                user_input.get(
+                self._get_option(
                     CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-                    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                    self.config_entry.data.get(
+                        CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                        DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                    ),
                 )
             )
-            max_charge_kw = float(
+            inverter_ac_limit_kw = float(
                 user_input.get(
-                    CONF_SOLPLANET_MAX_CHARGE_KW,
-                    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
+                    CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                    self.config_entry.data.get(
+                        CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                        DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                    ),
                 )
             )
-            max_discharge_kw = float(
-                user_input.get(
-                    CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
-                )
-            )
+            max_charge_kw = inverter_ac_limit_kw
+            max_discharge_kw = inverter_ac_limit_kw
             try:
                 await SolplanetBatteryController(
                     self.hass,
@@ -11869,13 +11841,13 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
                     battery_capacity_kwh=capacity_kwh,
                     max_charge_kw=max_charge_kw,
                     max_discharge_kw=max_discharge_kw,
+                    inverter_ac_limit_kw=inverter_ac_limit_kw,
                 ).connect()
                 new_data = dict(self.config_entry.data)
                 new_data[CONF_SOLPLANET_CONFIG_ENTRY_ID] = selected_entry_id
                 new_data[CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID] = selected_entry_id
                 new_data[CONF_SOLPLANET_BATTERY_CAPACITY_KWH] = capacity_kwh
-                new_data[CONF_SOLPLANET_MAX_CHARGE_KW] = max_charge_kw
-                new_data[CONF_SOLPLANET_MAX_DISCHARGE_KW] = max_discharge_kw
+                new_data[CONF_SOLPLANET_INVERTER_AC_LIMIT_KW] = inverter_ac_limit_kw
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -11896,81 +11868,23 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
                 _LOGGER.error("Solplanet battery options error: %s", exc)
                 errors["base"] = "solplanet_connect_failed"
 
-        current_entry_id = self._get_option(
-            CONF_SOLPLANET_CONFIG_ENTRY_ID,
-            self.config_entry.data.get(
-                CONF_SOLPLANET_CONFIG_ENTRY_ID,
-                self.config_entry.data.get(CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID, ""),
-            ),
-        )
         return self.async_show_form(
             step_id="solplanet_connection",
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_SOLPLANET_CONFIG_ENTRY_ID,
-                        default=current_entry_id,
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(
-                                    value=source.entry_id,
-                                    label=source.title or source.entry_id,
-                                )
-                                for source in solplanet_entries
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                    vol.Required(
-                        CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                        CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
                         default=self._get_option(
-                            CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+                            CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
                             self.config_entry.data.get(
-                                CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-                                DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+                                CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                                DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
                             ),
                         ),
                     ): NumberSelector(
                         NumberSelectorConfig(
                             min=1,
-                            max=200,
-                            step=0.1,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="kWh",
-                        )
-                    ),
-                    vol.Required(
-                        CONF_SOLPLANET_MAX_CHARGE_KW,
-                        default=self._get_option(
-                            CONF_SOLPLANET_MAX_CHARGE_KW,
-                            self.config_entry.data.get(
-                                CONF_SOLPLANET_MAX_CHARGE_KW,
-                                DEFAULT_SOLPLANET_MAX_CHARGE_KW,
-                            ),
-                        ),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.1,
-                            max=10,
-                            step=0.1,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="kW",
-                        )
-                    ),
-                    vol.Required(
-                        CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                        default=self._get_option(
-                            CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                            self.config_entry.data.get(
-                                CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                                DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
-                            ),
-                        ),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.1,
-                            max=10,
+                            max=250,
                             step=0.1,
                             mode=NumberSelectorMode.BOX,
                             unit_of_measurement="kW",

@@ -933,11 +933,9 @@ from .const import (
     CONF_NEOVOLT_MAX_DISCHARGE_KW,
     CONF_SOLPLANET_CONFIG_ENTRY_ID,
     CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-    CONF_SOLPLANET_MAX_CHARGE_KW,
-    CONF_SOLPLANET_MAX_DISCHARGE_KW,
+    CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
     DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
-    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
-    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
+    DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
     CONF_NEOVOLT_BATTERY_CAPACITIES_KWH,
     CONF_NEOVOLT_SURPLUS_BALANCER_MODE,
     CONF_NEOVOLT_SOC_BALANCE_TOLERANCE,
@@ -25777,6 +25775,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             battery_capacities_kwh=list(neovolt_battery_capacities_kwh or []),
         )
     elif is_solplanet:
+        solplanet_inverter_ac_limit_kw = float(
+            _entry_value(
+                CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
+                DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
+            )
+        )
         solplanet_coordinator = SolplanetEnergyCoordinator(
             hass,
             solplanet_entry_id=source_config_entry_id
@@ -25787,18 +25791,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
                 )
             ),
-            max_charge_kw=float(
-                _entry_value(
-                    CONF_SOLPLANET_MAX_CHARGE_KW,
-                    DEFAULT_SOLPLANET_MAX_CHARGE_KW,
-                )
-            ),
-            max_discharge_kw=float(
-                _entry_value(
-                    CONF_SOLPLANET_MAX_DISCHARGE_KW,
-                    DEFAULT_SOLPLANET_MAX_DISCHARGE_KW,
-                )
-            ),
+            max_charge_kw=solplanet_inverter_ac_limit_kw,
+            max_discharge_kw=solplanet_inverter_ac_limit_kw,
+            inverter_ac_limit_kw=solplanet_inverter_ac_limit_kw,
             entry_id=entry.entry_id,
         )
     elif is_solaredge:

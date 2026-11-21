@@ -190,13 +190,18 @@ class _FakeHass:
         self.entity_registry = _FakeRegistry([state.entity_id for state in states])
 
 
-def _controller(hass: _FakeHass) -> SolplanetBatteryController:
+def _controller(
+    hass: _FakeHass,
+    *,
+    inverter_ac_limit_kw: float = 10.0,
+) -> SolplanetBatteryController:
     return SolplanetBatteryController(
         hass,
         "solplanet-entry",
         battery_capacity_kwh=51.2,
         max_charge_kw=5,
         max_discharge_kw=10,
+        inverter_ac_limit_kw=inverter_ac_limit_kw,
     )
 
 
@@ -289,8 +294,42 @@ def test_temporary_slot_replaces_the_day_and_sets_both_power_limits():
             "mode": "discharge",
         },
     ]
-    assert hass.services.calls[0][2]["pout"] == 10000
+    assert hass.services.calls[0][2]["pout"] == 8000
     assert hass.services.calls[0][2]["pin"] == 5000
+
+
+def test_force_discharge_respects_requested_power_and_solar_headroom():
+    hass = _FakeHass()
+    controller = _controller(hass, inverter_ac_limit_kw=10)
+
+    assert asyncio.run(
+        controller.force_discharge(30, 8000, solar_forecast_kw=4)
+    )
+    assert hass.services.calls[0][2]["pout"] == 6000
+
+    hass.services.calls.clear()
+    assert asyncio.run(
+        controller.force_discharge(30, 3000, solar_forecast_kw=4)
+    )
+    assert hass.services.calls[0][2]["pout"] == 3000
+
+    hass.services.calls.clear()
+    assert asyncio.run(
+        controller.force_discharge(30, 8000, solar_forecast_kw=12)
+    )
+    assert hass.services.calls[0][2]["pout"] == 0
+
+
+def test_force_discharge_without_forecast_uses_requested_power():
+    hass = _FakeHass()
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.force_discharge(30, 8000))
+    assert hass.services.calls[0][2]["pout"] == 8000
+
+    hass.services.calls.clear()
+    assert asyncio.run(controller.force_discharge(30, 12000))
+    assert hass.services.calls[0][2]["pout"] == 10000
 
 
 def test_temporary_slot_replaces_an_overlapping_existing_schedule():
