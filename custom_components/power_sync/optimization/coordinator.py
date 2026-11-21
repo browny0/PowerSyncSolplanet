@@ -12607,6 +12607,20 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             force_power_w,
                         )
                     )
+                    forecast_discharge_power_changed = False
+                    if force_type == "discharge" and self.battery_system == "solplanet":
+                        forecast_change_check = getattr(
+                            battery,
+                            "forecast_limited_discharge_power_changed",
+                            None,
+                        )
+                        if callable(forecast_change_check):
+                            forecast_discharge_power_changed = bool(
+                                forecast_change_check(force_power_w)
+                            )
+                    hardware_power_changed = (
+                        hardware_power_changed or forecast_discharge_power_changed
+                    )
                     if force_type == "charge":
                         grid_target = self._charge_grid_target_kwargs(force_window_action).get("grid_import_target_w")
                         prior_target = _ext_state.get("grid_import_target_w")

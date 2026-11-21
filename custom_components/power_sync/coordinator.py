@@ -12148,6 +12148,13 @@ class SolplanetEnergyCoordinator(
         get_forecast = getattr(optimizer, "get_current_solar_forecast_kw", None)
         return get_forecast() if callable(get_forecast) else None
 
+    def forecast_limited_discharge_power_changed(self, power_w: int | float) -> bool:
+        """Check whether the latest forecast changes Solplanet's scheduled cap."""
+        return self._controller.forecast_limited_discharge_power_changed(
+            power_w,
+            solar_forecast_kw=self._current_solar_forecast_kw(),
+        )
+
     async def restore_normal(self) -> bool:
         if not self._native_control_allowed("Solplanet restore_normal"):
             return False

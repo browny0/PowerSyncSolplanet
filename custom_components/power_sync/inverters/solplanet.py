@@ -50,6 +50,7 @@ class SolplanetBatteryController:
         self._entity_map: dict[str, str] = {}
         self._active_schedule_day: str | None = None
         self._active_schedule_slot: dict[str, int | str] | None = None
+        self._last_discharge_power_w: int | None = None
 
     async def connect(self) -> bool:
         """Validate the selected Solplanet entry exposes required entities."""
@@ -173,6 +174,26 @@ class SolplanetBatteryController:
         solar_forecast_kw: float | None = None,
     ) -> bool:
         """Schedule discharge within the request and forecast PV headroom."""
+        discharge_limit_w = self.discharge_power_limit_w(
+            power_w,
+            solar_forecast_kw=solar_forecast_kw,
+        )
+        success = await self._set_temporary_schedule(
+            "discharge",
+            duration_minutes,
+            discharge_power_w=discharge_limit_w,
+        )
+        if success:
+            self._last_discharge_power_w = discharge_limit_w
+        return success
+
+    def discharge_power_limit_w(
+        self,
+        power_w: int | float,
+        *,
+        solar_forecast_kw: float | None = None,
+    ) -> int:
+        """Return the requested discharge capped by battery and PV headroom."""
         requested_w = float(power_w)
         if not math.isfinite(requested_w) or requested_w < 0:
             raise ValueError("Solplanet discharge power must be a finite nonnegative value")
@@ -196,11 +217,23 @@ class SolplanetBatteryController:
                         forecast_kw,
                         self._inverter_ac_limit_w / 1000,
                     )
-        return await self._set_temporary_schedule(
-            "discharge",
-            duration_minutes,
-            discharge_power_w=discharge_limit_w,
+        return discharge_limit_w
+
+    def forecast_limited_discharge_power_changed(
+        self,
+        power_w: int | float,
+        *,
+        solar_forecast_kw: float | None = None,
+        tolerance_w: int = 100,
+    ) -> bool:
+        """Check whether a fresh forecast requires a different scheduled limit."""
+        if self._last_discharge_power_w is None:
+            return False
+        target_w = self.discharge_power_limit_w(
+            power_w,
+            solar_forecast_kw=solar_forecast_kw,
         )
+        return abs(target_w - self._last_discharge_power_w) > tolerance_w
 
     async def set_backup_mode(self) -> bool:
         """Hold both battery directions at zero using the custom schedule."""
@@ -307,6 +340,7 @@ class SolplanetBatteryController:
             await self._set_mode(_MODE_SELF_CONSUMPTION)
             self._active_schedule_day = None
             self._active_schedule_slot = None
+            self._last_discharge_power_w = None
             return True
         except Exception:
             _LOGGER.exception("Solplanet restore to self-consumption failed")

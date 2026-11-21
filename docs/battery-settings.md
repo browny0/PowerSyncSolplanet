@@ -53,7 +53,11 @@ minus the current solar forecast. The forecast comes from PowerSync's own
 provider-neutral optimizer data, so it works with any supported forecast
 provider. A fresh forecast means the latest optimizer result is no older than
 two optimization intervals; without one, the requested discharge is retained.
-The cap has no additional safety margin.
+The cap has no additional safety margin. During optimizer-managed discharge,
+PowerSync checks the forecast-derived limit on each optimizer cycle and
+rewrites the Solplanet schedule only when the effective limit changes by more
+than 100 W. This lets the export limit follow forecast updates without
+repeatedly rewriting an unchanged schedule.
 
 PowerSync requires the integration's **Replace Schedule Day** and
 **Clear Schedule** actions. A force charge/discharge replaces that day's
