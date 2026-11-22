@@ -39313,6 +39313,81 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass.async_create_task(_notify_api_error(hass, "Force Discharge Failed", "Anker Solix control error"))
                 return
 
+        if is_solplanet:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                solplanet_coord = entry_data.get("solplanet_coordinator")
+                if not solplanet_coord:
+                    force_discharge_state["active"] = False
+                    _LOGGER.error("Force discharge: Solplanet coordinator not available")
+                    return
+
+                discharge_result = await solplanet_coord.force_discharge(
+                    duration,
+                    power_w=command_power_w,
+                )
+                if not discharge_result:
+                    force_discharge_state["active"] = False
+                    _LOGGER.error("Solplanet force discharge failed")
+                    return
+
+                force_discharge_state["active"] = True
+                force_discharge_state["source"] = source
+                force_discharge_state["duration"] = duration
+                force_discharge_state["power_w"] = command_power_w
+                force_discharge_state["expires_at"] = (
+                    dt_util.utcnow() + timedelta(minutes=duration)
+                )
+                async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
+                    "active": True,
+                    "expires_at": force_discharge_state["expires_at"].isoformat(),
+                    "duration": duration,
+                })
+
+                if force_discharge_state.get("cancel_expiry_timer"):
+                    force_discharge_state["cancel_expiry_timer"]()
+
+                async def auto_restore_discharge_solplanet(_now):
+                    if getattr(hass, "data", {}).get("power_sync_license_manager") is not None:
+                        from .licensing.entry_routing import entry_service_data
+                    else:
+                        entry_service_data = lambda _entry_id, data, origin=None: data
+                    if _command_generation[0] != _restore_gen:
+                        return
+                    if force_discharge_state["active"]:
+                        _LOGGER.info("Solplanet force discharge expired, auto-restoring")
+                        await hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_RESTORE_NORMAL,
+                            entry_service_data(
+                                entry.entry_id,
+                                {"source": "force_timer", "_allow_monitoring_restore": True},
+                                call,
+                            ),
+                            blocking=True,
+                        )
+
+                force_discharge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+                    hass,
+                    auto_restore_discharge_solplanet,
+                    force_discharge_state["expires_at"],
+                )
+                await persist_force_mode_state()
+                return
+            except Exception as e:
+                force_discharge_state["active"] = False
+                _LOGGER.error(
+                    "Error in Solplanet force discharge: %s",
+                    e,
+                    exc_info=True,
+                )
+                hass.async_create_task(_notify_api_error(
+                    hass,
+                    "Force Discharge Failed",
+                    "Solplanet schedule control error",
+                ))
+                return
+
         tesla_force_discharge_mutated = False
         try:
             # Get Tesla gateway config
@@ -41284,6 +41359,88 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force_charge_state["active"] = False
                 _LOGGER.error(f"Error in Anker Solix force charge: {e}", exc_info=True)
                 hass.async_create_task(_notify_api_error(hass, "Force Charge Failed", "Anker Solix control error"))
+                return
+
+        if is_solplanet:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                solplanet_coord = entry_data.get("solplanet_coordinator")
+                if not solplanet_coord:
+                    force_charge_state["active"] = False
+                    _LOGGER.error("Force charge: Solplanet coordinator not available")
+                    return
+
+                if force_discharge_state["active"]:
+                    if force_discharge_state.get("cancel_expiry_timer"):
+                        force_discharge_state["cancel_expiry_timer"]()
+                        force_discharge_state["cancel_expiry_timer"] = None
+                    force_discharge_state["active"] = False
+                    force_discharge_state["expires_at"] = None
+
+                charge_result = await solplanet_coord.force_charge(
+                    duration,
+                    power_w=command_power_w,
+                )
+                if not charge_result:
+                    force_charge_state["active"] = False
+                    _LOGGER.error("Solplanet force charge failed")
+                    return
+
+                force_charge_state["active"] = True
+                force_charge_state["source"] = source
+                force_charge_state["duration"] = duration
+                force_charge_state["power_w"] = command_power_w
+                force_charge_state["expires_at"] = (
+                    dt_util.utcnow() + timedelta(minutes=duration)
+                )
+                async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
+                    "active": True,
+                    "expires_at": force_charge_state["expires_at"].isoformat(),
+                    "duration": duration,
+                })
+
+                if force_charge_state.get("cancel_expiry_timer"):
+                    force_charge_state["cancel_expiry_timer"]()
+
+                async def auto_restore_charge_solplanet(_now):
+                    if getattr(hass, "data", {}).get("power_sync_license_manager") is not None:
+                        from .licensing.entry_routing import entry_service_data
+                    else:
+                        entry_service_data = lambda _entry_id, data, origin=None: data
+                    if _command_generation[0] != _restore_gen:
+                        return
+                    if force_charge_state["active"]:
+                        _LOGGER.info("Solplanet force charge expired, auto-restoring")
+                        await hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_RESTORE_NORMAL,
+                            entry_service_data(
+                                entry.entry_id,
+                                {"source": "force_timer", "_allow_monitoring_restore": True},
+                                call,
+                            ),
+                            blocking=True,
+                        )
+
+                force_charge_state["cancel_expiry_timer"] = async_track_point_in_utc_time(
+                    hass,
+                    auto_restore_charge_solplanet,
+                    force_charge_state["expires_at"],
+                )
+                await persist_force_mode_state()
+                return
+            except Exception as e:
+                force_charge_state["active"] = False
+                _LOGGER.error(
+                    "Error in Solplanet force charge: %s",
+                    e,
+                    exc_info=True,
+                )
+                hass.async_create_task(_notify_api_error(
+                    hass,
+                    "Force Charge Failed",
+                    "Solplanet schedule control error",
+                ))
                 return
 
         tesla_force_charge_mutated = False
@@ -44117,6 +44274,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ("saj_h2_coordinator", "saj_h2"),
             ("fronius_reserva_coordinator", "fronius_reserva"),
             ("neovolt_coordinator", "neovolt"),
+            ("solplanet_coordinator", "solplanet"),
             ("solaredge_coordinator", "solaredge"),
             ("anker_solix_coordinator", "anker_solix"),
         ):
@@ -44889,6 +45047,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.error(f"Error setting Neovolt self-consumption: {e}", exc_info=True)
                 return
 
+        if is_solplanet:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                solplanet_coord = entry_data.get("solplanet_coordinator")
+                if not solplanet_coord:
+                    _LOGGER.error("Self-consumption: Solplanet coordinator not available")
+                    return
+                success = await _guarded_self_consumption_write(
+                    solplanet_coord.restore_normal
+                )
+                if success:
+                    force_charge_state["active"] = False
+                    force_discharge_state["active"] = False
+                    force_charge_state["expires_at"] = None
+                    force_discharge_state["expires_at"] = None
+                    force_charge_state["cancel_expiry_timer"] = None
+                    force_discharge_state["cancel_expiry_timer"] = None
+                    _LOGGER.info("Solplanet normal operation restored")
+                    await persist_force_mode_state()
+                else:
+                    _LOGGER.error("Failed to restore Solplanet normal operation")
+                return
+            except Exception as e:
+                _LOGGER.error(
+                    "Error restoring Solplanet normal operation: %s",
+                    e,
+                    exc_info=True,
+                )
+                return
+
         if is_solaredge_sc:
             return
 
@@ -45440,6 +45628,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             except Exception as e:
                 _LOGGER.error(f"Error setting Neovolt backup reserve: {e}", exc_info=True)
+        elif is_solplanet:
+            try:
+                entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+                solplanet_coord = entry_data.get("solplanet_coordinator")
+                if not solplanet_coord:
+                    _LOGGER.error("Solplanet coordinator not available for set_backup_reserve")
+                    return
+
+                success = await solplanet_coord.set_backup_reserve(percent)
+                if success:
+                    _LOGGER.info("Solplanet backup reserve set to %d%%", percent)
+                else:
+                    _LOGGER.error("Failed to set Solplanet backup reserve")
+            except Exception as e:
+                _LOGGER.error(
+                    "Error setting Solplanet backup reserve: %s",
+                    e,
+                    exc_info=True,
+                )
         elif bool(
             entry.data.get(CONF_BATTERY_SYSTEM) == BATTERY_SYSTEM_SOLAREDGE
             or entry.data.get(CONF_SOLAREDGE_HOST)

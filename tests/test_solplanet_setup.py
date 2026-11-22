@@ -36,6 +36,7 @@ def test_solplanet_setup_does_not_require_a_tesla_energy_site():
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.Name)
         and node.test.id == "is_solplanet"
+        and _contains_call(node, "SolplanetEnergyCoordinator")
     )
     assert _contains_call(solplanet_branch, "SolplanetEnergyCoordinator")
 
@@ -89,6 +90,7 @@ def test_solplanet_setup_reads_persisted_battery_values():
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.Name)
         and node.test.id == "is_solplanet"
+        and _contains_call(node, "SolplanetEnergyCoordinator")
     )
     branch_source = ast.unparse(solplanet_branch)
 
@@ -110,3 +112,35 @@ def test_legacy_solplanet_entry_is_detected_without_battery_system():
 
     assert "CONF_SOLPLANET_CONFIG_ENTRY_ID" in resolver_source
     assert "BATTERY_SYSTEM_SOLPLANET" in resolver_source
+
+
+def test_solplanet_force_commands_bypass_tesla_credentials():
+    source = INIT_PATH.read_text()
+    setup = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "async_setup_entry"
+    )
+
+    handlers = {
+        node.name: ast.unparse(node)
+        for node in ast.walk(setup)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in {
+            "handle_force_charge",
+            "handle_force_discharge",
+            "handle_restore_normal",
+        }
+    }
+
+    assert "solplanet_coord.force_discharge" in handlers["handle_force_discharge"]
+    assert "solplanet_coord.force_charge" in handlers["handle_force_charge"]
+    assert "solplanet_coord.restore_normal" in source
+
+
+def test_solplanet_hold_and_backup_reserve_routing():
+    source = INIT_PATH.read_text()
+
+    assert '("solplanet_coordinator", "solplanet")' in source
+    assert "solplanet_coord.set_backup_reserve(percent)" in source
