@@ -1301,6 +1301,9 @@
   "options": {
     "error": {
       "invalid_tesla_site": "Select a Tesla energy site from the list.",
+      "invalid_solplanet_meter": "Select a meter belonging to the configured Solplanet integration.",
+      "solplanet_meter_required": "Select the Solplanet meter to use for export curtailment.",
+      "solplanet_meter_not_found": "No meter devices are available in the configured Solplanet integration. Enable the meter device and try again.",
       "no_energy_sites": "No Tesla energy sites found for this account.",
       "invalid_auth": "The Tesla API connection could not be authenticated. Check your selected provider and sign in again.",
       "optimizer_pairing_no_code": "There is no pairing code in this dialog. If the original HA dialog is still open, choose Finish pairing there. Otherwise choose Start pairing here, approve the new code in your account, then choose Finish pairing in this dialog within ten minutes.",
@@ -2633,6 +2636,7 @@
         "description": "Configure export curtailment and optional PV production stopping during negative retail import prices. Each has its own permission and controls.",
         "data": {
           "battery_curtailment_enabled": "Enable battery export curtailment",
+          "solplanet_meter_device_id": "Solplanet grid meter",
           "ac_inverter_curtailment_enabled": "Enable separate AC-coupled inverter shutdown",
           "curtailment_export_threshold_cents": "Curtail below export earnings",
           "curtailment_control_in_monitoring_mode": "Allow curtailment control in Monitoring Mode",
@@ -2648,6 +2652,7 @@
         },
         "data_description": {
           "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
+          "solplanet_meter_device_id": "Choose the Solplanet main grid meter. PowerSync selects it automatically only when exactly one meter with readable settings is available.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold (negative earnings by default). Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "curtailment_export_threshold_cents": "The normal automatic trigger is below 0 c/kWh; export at exactly 0 c/kWh is not curtailed. A non-zero custom threshold retains a 0.2c/kWh release deadband.",
           "curtailment_control_in_monitoring_mode": "When explicitly enabled, automatic curtail and restore commands may run while Monitoring Mode continues to block every unrelated battery, EV, and inverter dispatch command. Curtailment can change solar output or inverter export settings.",
@@ -2994,7 +2999,8 @@
       }
     },
     "abort": {
-      "solar_production_restore_pending": "The saved PV production setting could not be restored. Settings were not changed. Check inverter availability and retry."
+      "solar_production_restore_pending": "The saved PV production setting could not be restored. Settings were not changed. Check inverter availability and retry.",
+      "solplanet_curtailment_restore_pending": "The previous Solplanet meter limit could not be restored. The meter selection was not changed; check the Solplanet integration and retry."
     }
   },
   "issues": {

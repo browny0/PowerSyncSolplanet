@@ -61,6 +61,7 @@ CONF_TIMEZONE = "timezone"
 CONF_AMBER_FORECAST_TYPE = "amber_forecast_type"
 CONF_BATTERY_CURTAILMENT_ENABLED = "battery_curtailment_enabled"
 CONF_CURTAILMENT_EXPORT_THRESHOLD_CENTS = "curtailment_export_threshold_cents"
+CONF_SOLPLANET_METER_DEVICE_ID = "solplanet_meter_device_id"
 DEFAULT_CURTAILMENT_EXPORT_THRESHOLD_CENTS = 0.0
 CONF_CURTAILMENT_CONTROL_IN_MONITORING_MODE = (
     "curtailment_control_in_monitoring_mode"

@@ -12108,6 +12108,7 @@ class SolplanetEnergyCoordinator(
             "load_power": load_kw,
             "load_power_estimated": True,
             "battery_level": status["battery_level"],
+            "battery_soh": status.get("battery_soh"),
             "battery_capacity_kwh": status["battery_capacity_kwh"],
             "battery_max_charge_power_w": status["battery_max_charge_power_w"],
             "battery_max_discharge_power_w": status["battery_max_discharge_power_w"],

@@ -626,6 +626,7 @@
       "options.covau_options.covau_refresh_public_plan": "Refresh this public plan snapshot",
       "options.curtailment_options.ac_inverter_curtailment_enabled": "Enable separate AC-coupled inverter shutdown",
       "options.curtailment_options.battery_curtailment_enabled": "Enable battery export curtailment",
+      "options.curtailment_options.solplanet_meter_device_id": "Solplanet grid meter",
       "options.curtailment_options.curtailment_control_in_monitoring_mode": "Allow curtailment control in Monitoring Mode",
       "options.curtailment_options.curtailment_export_threshold_cents": "Curtail below export earnings",
       "options.curtailment_options.negative_import_solar_controls_all_pv": "These controls cover all solar generation",

@@ -5360,6 +5360,7 @@ CURTAILMENT_CONTROL_STATE_KEYS = (
     "goodwe_curtailment_state",
     "sigenergy_curtailment_state",
     "solaredge_curtailment_state",
+    "solplanet_curtailment_state",
     "sungrow_curtailment_state",
 )
 

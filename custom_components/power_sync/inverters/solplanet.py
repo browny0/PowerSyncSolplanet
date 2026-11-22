@@ -15,6 +15,7 @@ _LOGGER = logging.getLogger(__name__)
 _ENTITY_SUFFIXES: dict[str, tuple[str, ...]] = {
     "battery_power": ("battery_power",),
     "battery_level": ("battery_state_of_charge", "state_of_charge"),
+    "battery_soh": ("battery_state_of_health", "state_of_health"),
     "solar_power": ("pv_power",),
     "grid_power": ("meter_power",),
     "work_mode": ("work_mode",),
@@ -22,6 +23,7 @@ _ENTITY_SUFFIXES: dict[str, tuple[str, ...]] = {
     "schedule_output_power": ("schedule_output_power",),
     "schedule_configured": ("schedule_configured",),
 }
+_OPTIONAL_ENTITY_KEYS = {"battery_soh"}
 
 _DAY_NAMES = ("Mon", "Tus", "Wen", "Thu", "Fri", "Sat", "Sun")
 _MODE_SELF_CONSUMPTION = "Self-consumption mode"
@@ -55,7 +57,9 @@ class SolplanetBatteryController:
     async def connect(self) -> bool:
         """Validate the selected Solplanet entry exposes required entities."""
         self._discover_entities()
-        required = tuple(_ENTITY_SUFFIXES)
+        required = tuple(
+            key for key in _ENTITY_SUFFIXES if key not in _OPTIONAL_ENTITY_KEYS
+        )
         missing = [key for key in required if key not in self._entity_map]
         if missing:
             missing_entities = [
@@ -83,6 +87,8 @@ class SolplanetBatteryController:
         entries = er.async_entries_for_config_entry(registry, self._config_entry_id)
         entity_map: dict[str, str] = {}
         for key, suffixes in _ENTITY_SUFFIXES.items():
+            if key == "battery_soh":
+                continue
             domain = self._entity_domain(key)
             for entry in entries:
                 if entry.domain != domain:
@@ -91,6 +97,11 @@ class SolplanetBatteryController:
                 if any(identity.endswith(suffix) for identity in identities for suffix in suffixes):
                     entity_map[key] = entry.entity_id
                     break
+        battery_soh = self._find_optional_entity_in_entries(
+            entries, "sensor", _ENTITY_SUFFIXES["battery_soh"]
+        )
+        if battery_soh:
+            entity_map["battery_soh"] = battery_soh
         optional_min_soc = self._find_optional_entity_in_entries(entries, "number", ("soc_min",))
         if optional_min_soc:
             entity_map["min_soc"] = optional_min_soc
@@ -136,6 +147,7 @@ class SolplanetBatteryController:
         grid_w = self._read_number("grid_power")
         solar_w = self._read_number("solar_power")
         soc = self._read_number("battery_level")
+        soh = self._read_number("battery_soh")
         telemetry_ready = all(value is not None for value in (battery_w, grid_w, solar_w, soc))
         battery_kw = (battery_w or 0.0) / 1000
         grid_kw = (grid_w or 0.0) / 1000
@@ -144,6 +156,7 @@ class SolplanetBatteryController:
             "telemetry_ready": telemetry_ready,
             "battery_power": battery_kw,
             "battery_level": soc,
+            "battery_soh": soh,
             "solar_power": solar_kw,
             "grid_power": grid_kw,
             "load_power": max(0.0, solar_kw + grid_kw + battery_kw),
@@ -375,7 +388,11 @@ class SolplanetBatteryController:
     async def _ensure_entities(self) -> None:
         if not self._entity_map:
             self._discover_entities()
-        missing = [key for key in _ENTITY_SUFFIXES if key not in self._entity_map]
+        missing = [
+            key
+            for key in _ENTITY_SUFFIXES
+            if key not in _OPTIONAL_ENTITY_KEYS and key not in self._entity_map
+        ]
         if missing:
             raise ValueError(f"solplanet_missing_entities:{','.join(missing)}")
 

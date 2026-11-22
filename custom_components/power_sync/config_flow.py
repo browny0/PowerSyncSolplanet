@@ -41,6 +41,10 @@ from .history_migration import (
     preview_history_relink,
 )
 from .curtailment_config import normalize_curtailment_export_threshold_cents
+from .solplanet_meter_curtailment import (
+    resolve_solplanet_meter,
+    solplanet_meter_devices,
+)
 from .solar_production import (
     ENABLED as SOLAR_STOP_ENABLED, ENTITIES as SOLAR_STOP_ENTITIES,
     ALL_PV as SOLAR_STOP_ALL_PV, validate_production_entities,
@@ -138,6 +142,7 @@ from .const import (
     CONF_BATTERY_CONNECTION_PROFILE,
     CONF_BATTERY_INTEGRATION_CONFIG_ENTRY_ID,
     CONF_BATTERY_INTEGRATION_ANCHOR_ENTITY,
+    CONF_SOLPLANET_METER_DEVICE_ID,
     CONF_BATTERY_SENSOR_DISPLAY_MODE,
     BATTERY_SENSOR_DISPLAY_RECOMMENDED,
     BATTERY_SENSOR_DISPLAY_MODES,
@@ -8295,6 +8300,25 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
             restore_when_state_lost=True,
         )
 
+        if entry_data.get("solplanet_curtailment_restore_state"):
+            restore = entry_data.get("restore_solplanet_curtailment")
+            if not callable(restore):
+                _LOGGER.error(
+                    "Solplanet meter curtailment is pending but no restore handler is available"
+                )
+            else:
+                try:
+                    success = await restore()
+                except Exception as err:
+                    _LOGGER.error("Solplanet meter curtailment restore failed: %s", err)
+                else:
+                    if not success:
+                        _LOGGER.error("Solplanet meter curtailment restore returned false")
+                    else:
+                        _LOGGER.info(
+                            "Solar curtailment disabled - restored Solplanet meter limit"
+                        )
+
         if entry_data.get("foxess_curtailment_state") == "curtailed":
             fc = entry_data.get("foxess_coordinator")
             controller = getattr(fc, "_controller", fc)
@@ -15694,18 +15718,57 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
         is_sigenergy = battery_system == BATTERY_SYSTEM_SIGENERGY
         is_sungrow = battery_system == BATTERY_SYSTEM_SUNGROW
         is_tesla = battery_system == BATTERY_SYSTEM_TESLA
+        is_solplanet = battery_system == BATTERY_SYSTEM_SOLPLANET
+        solplanet_entry_id = self._get_option(
+            CONF_SOLPLANET_CONFIG_ENTRY_ID,
+            self.config_entry.data.get(CONF_SOLPLANET_CONFIG_ENTRY_ID),
+        )
+        solplanet_meters = (
+            solplanet_meter_devices(self.hass, solplanet_entry_id)
+            if is_solplanet
+            else {}
+        )
 
         errors = {}
         if user_input is not None:
+            if is_solplanet:
+                requested_meter_id = user_input.get(
+                    CONF_SOLPLANET_METER_DEVICE_ID,
+                    self._get_option(CONF_SOLPLANET_METER_DEVICE_ID),
+                )
+                resolved_meter = resolve_solplanet_meter(
+                    solplanet_meters, requested_meter_id
+                )
+                meter_curtailment_enabled = user_input.get(
+                    CONF_BATTERY_CURTAILMENT_ENABLED, False
+                )
+                if (
+                    requested_meter_id
+                    and resolved_meter is None
+                    and meter_curtailment_enabled
+                ):
+                    errors["base"] = "invalid_solplanet_meter"
+                elif (
+                    meter_curtailment_enabled and resolved_meter is None
+                ):
+                    errors["base"] = (
+                        "solplanet_meter_required"
+                        if solplanet_meters
+                        else "solplanet_meter_not_found"
+                    )
+                else:
+                    user_input[CONF_SOLPLANET_METER_DEVICE_ID] = (
+                        resolved_meter[0] if resolved_meter else ""
+                    )
             if user_input.get(SOLAR_STOP_ENABLED, False):
                 error = validate_production_entities(
                     self.hass, user_input.get(SOLAR_STOP_ENTITIES, [])
                 )
-                if error:
+                if error and not errors:
                     errors["base"] = error
-                elif not is_tesla and not user_input.get("solar_production_grid_connected_entity"):
+                elif not errors and not is_tesla and not user_input.get("solar_production_grid_connected_entity"):
                     errors["base"] = "solar_production_grid_status_required"
-                elif not user_input.get(SOLAR_STOP_ENTITIES) and not user_input.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False) and not is_sigenergy:
+                elif not errors and not user_input.get(SOLAR_STOP_ENTITIES) and not user_input.get(CONF_AC_INVERTER_CURTAILMENT_ENABLED, False) and not is_sigenergy:
                     errors["base"] = "solar_production_control_required"
             if errors:
                 user_input = None
@@ -15735,6 +15798,25 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
             new_curtailment_enabled = user_input.get(
                 CONF_BATTERY_CURTAILMENT_ENABLED, False
             )
+            previous_solplanet_meter_id = self._get_option(
+                CONF_SOLPLANET_METER_DEVICE_ID, ""
+            )
+            new_solplanet_meter_id = user_input.get(
+                CONF_SOLPLANET_METER_DEVICE_ID, ""
+            )
+            if is_solplanet and (
+                (was_curtailment_enabled and not new_curtailment_enabled)
+                or previous_solplanet_meter_id != new_solplanet_meter_id
+            ):
+                entry_data = self.hass.data.get(DOMAIN, {}).get(
+                    self.config_entry.entry_id, {}
+                )
+                if entry_data.get("solplanet_curtailment_restore_state"):
+                    restore = entry_data.get("restore_solplanet_curtailment")
+                    if not callable(restore) or not await restore():
+                        return self.async_abort(
+                            reason="solplanet_curtailment_restore_pending"
+                        )
             was_monitoring_curtailment_enabled = self._get_option(
                 CONF_CURTAILMENT_CONTROL_IN_MONITORING_MODE,
                 DEFAULT_CURTAILMENT_CONTROL_IN_MONITORING_MODE,
@@ -15778,6 +15860,10 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
                     new_monitoring_curtailment_enabled
                 ),
             }
+            if is_solplanet:
+                self._curtailment_options[CONF_SOLPLANET_METER_DEVICE_ID] = (
+                    user_input.get(CONF_SOLPLANET_METER_DEVICE_ID, "")
+                )
 
             # If entered from menu, save curtailment settings and finish
             if getattr(self, "_from_menu", False):
@@ -15903,6 +15989,38 @@ class PowerSyncOptionsFlow(AmberOptionsMixin, config_entries.OptionsFlow):
                 ),
             ): BooleanSelector(),
         }
+        if is_solplanet:
+            configured_meter_id = self._get_option(
+                CONF_SOLPLANET_METER_DEVICE_ID, ""
+            )
+            automatic_meter = resolve_solplanet_meter(
+                solplanet_meters, configured_meter_id or None
+            )
+            if automatic_meter is None:
+                automatic_meter = resolve_solplanet_meter(solplanet_meters, None)
+            meter_options = [
+                SelectOptionDict(label=details["name"], value=device_id)
+                for device_id, details in solplanet_meters.items()
+            ]
+            schema_dict[
+                vol.Optional(
+                    CONF_SOLPLANET_METER_DEVICE_ID,
+                    default=(
+                        automatic_meter[0]
+                        if automatic_meter
+                        else (
+                            configured_meter_id
+                            if configured_meter_id in solplanet_meters
+                            else None
+                        )
+                    ),
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=meter_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
 
         schema_dict.update({
             vol.Optional(SOLAR_STOP_ENABLED, default=self._get_option(SOLAR_STOP_ENABLED, False)): BooleanSelector(),

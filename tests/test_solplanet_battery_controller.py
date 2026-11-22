@@ -156,6 +156,7 @@ class _FakeHass:
         states = [
             _FakeState("sensor.battery_eq1_battery_power", "-2000"),
             _FakeState("sensor.battery_eq1_battery_state_of_charge", "72"),
+            _FakeState("sensor.battery_eq1_battery_state_of_health", "96"),
             _FakeState("sensor.battery_eq1_pv_power", "4000"),
             _FakeState("sensor.eastron_meter_power", "500"),
             _FakeState(
@@ -218,9 +219,27 @@ def test_connect_discovers_entities_and_returns_canonical_telemetry():
     assert status["solar_power"] == 4
     assert status["load_power"] == 2.5
     assert status["battery_level"] == 72
+    assert status["battery_soh"] == 96
     assert status["battery_capacity_kwh"] == 51.2
     assert status["battery_max_charge_power_w"] == 5000
     assert status["battery_max_discharge_power_w"] == 10000
+
+
+def test_soh_is_optional_and_does_not_gate_telemetry():
+    hass = _FakeHass()
+    hass.states._states.pop("sensor.battery_eq1_battery_state_of_health")
+    hass.entity_registry._entries = [
+        entry
+        for entry in hass.entity_registry._entries
+        if not entry.entity_id.endswith("_battery_state_of_health")
+    ]
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert status["telemetry_ready"] is True
+    assert status["battery_soh"] is None
 
 
 def test_force_charge_uses_latest_half_hour_boundary_and_selected_limits():
