@@ -175,9 +175,20 @@ class SolplanetBatteryController:
         return str(state.state)
 
     async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
-        """Schedule charging at the configured charge and discharge limits."""
-        del power_w
-        return await self._set_temporary_schedule("charge", duration_minutes)
+        """Schedule charging at the requested power, capped by the configured maximum."""
+        charge_limit_w = self.charge_power_limit_w(power_w)
+        return await self._set_temporary_schedule(
+            "charge",
+            duration_minutes,
+            charge_power_w=charge_limit_w,
+        )
+
+    def charge_power_limit_w(self, power_w: int | float) -> int:
+        """Return the requested charge power capped by the configured maximum."""
+        requested_w = float(power_w)
+        if not math.isfinite(requested_w) or requested_w < 0:
+            raise ValueError("Solplanet charge power must be a finite nonnegative value")
+        return min(self._max_charge_w, math.floor(requested_w))
 
     async def force_discharge(
         self,
@@ -273,6 +284,7 @@ class SolplanetBatteryController:
         mode: str,
         duration_minutes: int,
         *,
+        charge_power_w: int | None = None,
         discharge_power_w: int | None = None,
     ) -> bool:
         await self._ensure_entities()
@@ -299,7 +311,15 @@ class SolplanetBatteryController:
                     "Solplanet dispatch would cross midnight and cannot be scheduled"
                 )
                 return False
-            pin = 0 if mode == "hold" else int(round(self._max_charge_w))
+            pin = (
+                0
+                if mode == "hold"
+                else (
+                    charge_power_w
+                    if mode == "charge" and charge_power_w is not None
+                    else int(round(self._max_charge_w))
+                )
+            )
             pout = (
                 0
                 if mode == "hold"

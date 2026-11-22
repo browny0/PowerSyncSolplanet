@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import sys
 import types
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPONENT_ROOT = ROOT / "custom_components" / "power_sync"
@@ -242,7 +244,7 @@ def test_soh_is_optional_and_does_not_gate_telemetry():
     assert status["battery_soh"] is None
 
 
-def test_force_charge_uses_latest_half_hour_boundary_and_selected_limits():
+def test_force_charge_caps_requested_power_at_configured_maximum():
     hass = _FakeHass()
     controller = _controller(hass)
 
@@ -266,6 +268,28 @@ def test_force_charge_uses_latest_half_hour_boundary_and_selected_limits():
     }
     assert calls[1][0:2] == ("select", "select_option")
     assert calls[1][2]["option"] == "Custom mode"
+
+
+def test_force_charge_uses_requested_power_below_configured_maximum():
+    hass = _FakeHass()
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.force_charge(30, 3000))
+
+    schedule_call = hass.services.calls[0]
+    assert schedule_call[2]["pin"] == 3000
+    assert schedule_call[2]["pout"] == 10000
+
+
+@pytest.mark.parametrize("power_w", [-1, float("nan"), float("inf")])
+def test_force_charge_rejects_invalid_requested_power(power_w):
+    hass = _FakeHass()
+    controller = _controller(hass)
+
+    with pytest.raises(ValueError, match="finite nonnegative"):
+        asyncio.run(controller.force_charge(30, power_w))
+
+    assert hass.services.calls == []
 
 
 def test_restore_clears_all_schedule_days_and_returns_to_self_consumption():
