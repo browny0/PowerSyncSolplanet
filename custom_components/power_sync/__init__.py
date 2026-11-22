@@ -42362,6 +42362,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # not rely on Restore to suppress force modes for 30 min.
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
 
+        if active_battery_system == BATTERY_SYSTEM_SOLPLANET:
+            solplanet_restore_coord = entry_data.get("solplanet_coordinator")
+            if not solplanet_restore_coord:
+                return _restore_not_completed("Solplanet coordinator unavailable")
+            try:
+                restored = await solplanet_restore_coord.restore_normal()
+            except Exception as err:
+                _LOGGER.error(
+                    "Solplanet restore normal failed: %s",
+                    err,
+                    exc_info=True,
+                )
+                return _restore_not_completed("Solplanet restore normal failed")
+            if not restored:
+                return _restore_not_completed("Solplanet did not confirm normal operation")
+
+            for state in (
+                force_charge_state,
+                force_discharge_state,
+                hold_soc_state,
+                self_consumption_state,
+            ):
+                if state.get("cancel_expiry_timer"):
+                    try:
+                        state["cancel_expiry_timer"]()
+                    except Exception:
+                        pass
+                state["cancel_expiry_timer"] = None
+                state["active"] = False
+                state["expires_at"] = None
+            force_charge_state["duration"] = None
+            force_discharge_state["duration"] = None
+            await persist_force_mode_state()
+            if suppress_notification is False:
+                try:
+                    from .automations.actions import _send_expo_push
+                    await _send_expo_push(hass, "Battery", "Normal operation restored")
+                except Exception as notify_err:
+                    _LOGGER.debug(
+                        "Could not send Solplanet restore notification: %s",
+                        notify_err,
+                    )
+            async_dispatcher_send(hass, f"{DOMAIN}_force_charge_state", {
+                "active": False,
+                "expires_at": None,
+                "duration": 0,
+            })
+            async_dispatcher_send(hass, f"{DOMAIN}_force_discharge_state", {
+                "active": False,
+                "expires_at": None,
+                "duration": 0,
+            })
+            _LOGGER.info("Solplanet normal operation restored")
+            return {"success": True, "error": None} if confirm_restore or response_requested else None
+
         # Check if optimizer is active (and not in monitoring mode) — suppress routine notifications
         # (optimizer transitions between force modes frequently; AEMO spikes have their own notification)
         # Monitoring mode doesn't execute actions, so notifications should still fire.
