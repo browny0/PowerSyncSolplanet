@@ -4485,6 +4485,8 @@ def _active_battery_system(
         return BATTERY_SYSTEM_FRONIUS_RESERVA
     if _get_neovolt_entry_ids(merged, hass):
         return BATTERY_SYSTEM_NEOVOLT
+    if _value(CONF_SOLPLANET_CONFIG_ENTRY_ID):
+        return BATTERY_SYSTEM_SOLPLANET
     if _value(CONF_SOLAREDGE_HOST) or _value(CONF_SOLAREDGE_ENTITY_PREFIX):
         return BATTERY_SYSTEM_SOLAREDGE
 
@@ -25667,6 +25669,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             BATTERY_SYSTEM_SOLAX: CONF_SOLAX_CONFIG_ENTRY_ID,
             BATTERY_SYSTEM_SAJ_H2: CONF_SAJ_CONFIG_ENTRY_ID,
             BATTERY_SYSTEM_FRONIUS_RESERVA: CONF_FRONIUS_RESERVA_CONFIG_ENTRY_ID,
+            BATTERY_SYSTEM_SOLPLANET: CONF_SOLPLANET_CONFIG_ENTRY_ID,
             BATTERY_SYSTEM_ANKER_SOLIX: CONF_ANKER_SOLIX_CONFIG_ENTRY_ID,
         }
         legacy_source_key = legacy_source_keys.get(active_battery_system)
@@ -26281,24 +26284,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "No Solplanet integration selected. Open PowerSync settings "
                 "and select the Solplanet integration."
             )
-        inverter_ac_limit_kw = float(
-            _entry_value(
-                CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
-                DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
-            )
+        battery_capacity_kwh = _entry_value(
+            CONF_SOLPLANET_BATTERY_CAPACITY_KWH
         )
+        inverter_ac_limit_kw = _entry_value(
+            CONF_SOLPLANET_INVERTER_AC_LIMIT_KW
+        )
+        if battery_capacity_kwh is None or inverter_ac_limit_kw is None:
+            raise ConfigEntryNotReady(
+                "Solplanet battery settings are missing. Open PowerSync settings "
+                "and save the Solplanet battery configuration."
+            )
+        try:
+            battery_capacity_kwh = float(battery_capacity_kwh)
+            inverter_ac_limit_kw = float(inverter_ac_limit_kw)
+        except (TypeError, ValueError) as err:
+            raise ConfigEntryNotReady(
+                "Solplanet battery settings are invalid. Open PowerSync settings "
+                "and save the Solplanet battery configuration."
+            ) from err
+        if (
+            battery_capacity_kwh <= 0
+            or inverter_ac_limit_kw <= 0
+            or not math.isfinite(battery_capacity_kwh)
+            or not math.isfinite(inverter_ac_limit_kw)
+        ):
+            raise ConfigEntryNotReady(
+                "Solplanet battery settings must be greater than zero. Open "
+                "PowerSync settings and save the Solplanet battery configuration."
+            )
         _LOGGER.info(
             "Running in Solplanet mode - bridging via the Solplanet integration"
         )
         solplanet_coordinator = SolplanetEnergyCoordinator(
             hass,
             solplanet_entry_id=str(solplanet_entry_id),
-            battery_capacity_kwh=float(
-                _entry_value(
-                    CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
-                    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
-                )
-            ),
+            battery_capacity_kwh=battery_capacity_kwh,
             max_charge_kw=inverter_ac_limit_kw,
             max_discharge_kw=inverter_ac_limit_kw,
             inverter_ac_limit_kw=inverter_ac_limit_kw,
