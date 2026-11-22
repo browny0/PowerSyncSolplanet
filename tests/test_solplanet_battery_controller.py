@@ -91,6 +91,7 @@ class _FakeRegistry:
                 entity_id=entity_id,
                 unique_id=entity_id.split(".", 1)[1],
                 domain=entity_id.split(".", 1)[0],
+                platform="solplanet",
             )
             for entity_id in entity_ids
         ]
@@ -224,6 +225,30 @@ def test_connect_discovers_entities_and_returns_canonical_telemetry():
     assert status["battery_capacity_kwh"] == 51.2
     assert status["battery_max_charge_power_w"] == 5000
     assert status["battery_max_discharge_power_w"] == 10000
+
+
+def test_soc_discovery_ignores_tesla_vehicle_state_of_charge():
+    hass = _FakeHass()
+    hass.states._states["sensor.tesla_car_state_of_charge"] = _FakeState(
+        "sensor.tesla_car_state_of_charge",
+        "100",
+    )
+    hass.entity_registry._entries.insert(
+        0,
+        SimpleNamespace(
+            entity_id="sensor.tesla_car_state_of_charge",
+            unique_id="tesla_car_state_of_charge",
+            domain="sensor",
+            platform="tesla",
+        ),
+    )
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.connect())
+    assert controller._entity_map["battery_level"] == (
+        "sensor.battery_eq1_battery_state_of_charge"
+    )
+    assert controller.get_status()["battery_level"] == 72
 
 
 def test_soh_is_optional_and_does_not_gate_telemetry():

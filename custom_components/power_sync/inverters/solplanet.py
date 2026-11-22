@@ -91,7 +91,10 @@ class SolplanetBatteryController:
                 continue
             domain = self._entity_domain(key)
             for entry in entries:
-                if entry.domain != domain:
+                if (
+                    entry.domain != domain
+                    or getattr(entry, "platform", None) != "solplanet"
+                ):
                     continue
                 identities = (entry.entity_id.lower(), (entry.unique_id or "").lower())
                 if any(identity.endswith(suffix) for identity in identities for suffix in suffixes):
@@ -477,7 +480,10 @@ class SolplanetBatteryController:
         suffixes: tuple[str, ...],
     ) -> str | None:
         for entry in entries:
-            if entry.domain != domain:
+            if (
+                entry.domain != domain
+                or getattr(entry, "platform", None) != "solplanet"
+            ):
                 continue
             identities = (entry.entity_id.lower(), (entry.unique_id or "").lower())
             if any(identity.endswith(suffix) for identity in identities for suffix in suffixes):
