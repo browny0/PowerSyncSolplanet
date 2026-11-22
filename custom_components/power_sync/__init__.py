@@ -938,10 +938,14 @@ from .const import (
     DEFAULT_NEOVOLT_MAX_DISCHARGE_KW,
     DEFAULT_NEOVOLT_SURPLUS_BALANCER_MODE,
     DEFAULT_NEOVOLT_SOC_BALANCE_TOLERANCE,
+    BATTERY_SYSTEM_SOLPLANET,
     CONF_SOLPLANET_CONFIG_ENTRY_ID,
     CONF_SOLPLANET_BATTERY_CAPACITY_KWH,
+    CONF_SOLPLANET_INVERTER_AC_LIMIT_KW,
     CONF_SOLPLANET_MAX_CHARGE_KW,
     CONF_SOLPLANET_MAX_DISCHARGE_KW,
+    DEFAULT_SOLPLANET_BATTERY_CAPACITY_KWH,
+    DEFAULT_SOLPLANET_INVERTER_AC_LIMIT_KW,
     BATTERY_SYSTEM_SOLAREDGE,
     BATTERY_SYSTEM_ANKER_SOLIX,
     BATTERY_SYSTEM_CUSTOM,
@@ -7714,6 +7718,7 @@ _CALENDAR_ENERGY_SUMMARY_COORDINATORS = (
     ("saj_h2_coordinator", "SAJ H2"),
     ("fronius_reserva_coordinator", "Fronius GEN24 storage"),
     ("neovolt_coordinator", "Neovolt"),
+    ("solplanet_coordinator", "Solplanet"),
     ("solaredge_coordinator", "SolarEdge"),
 )
 
@@ -9663,6 +9668,7 @@ class BatteryHealthView(HomeAssistantView):
             "foxess_coordinator": "foxess",
             "fronius_reserva_coordinator": "fronius_reserva",
             "neovolt_coordinator": "neovolt",
+            "solplanet_coordinator": "solplanet",
             "solaredge_coordinator": "solaredge",
             "anker_solix_coordinator": "anker_solix",
         }
@@ -12664,7 +12670,7 @@ class ConfigView(HomeAssistantView):
 
             if not battery_health:
                 # Fall back to coordinator battery_soh (Sungrow, Sigenergy, GoodWe)
-                for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator", "neovolt_coordinator", "solaredge_coordinator"):
+                for key in ("sungrow_coordinator", "sigenergy_coordinator", "goodwe_coordinator", "alphaess_coordinator", "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator", "neovolt_coordinator", "solplanet_coordinator", "solaredge_coordinator"):
                     coord = entry_data.get(key)
                     if coord and coord.data:
                         soh = coord.data.get("battery_soh")
@@ -17547,6 +17553,33 @@ class EVVehicleCommandView(HomeAssistantView):
                 _LOGGER.debug(f"Vehicle location from {location_entity}: {state.state} (at_home={is_home})")
                 return is_home
 
+        # BLE bridges may expose a tracker named after their configured
+        # entity prefix rather than as a Tesla device or with a _location suffix.
+        config = self._get_powersync_config()
+        ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
+        if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
+            ble_prefix = _ble_prefix_for_vehicle(
+                self._hass, config, vehicle_vin
+            )
+            if ble_prefix:
+                for entity_id in (
+                    f"device_tracker.{ble_prefix}",
+                    f"device_tracker.{ble_prefix}_location",
+                ):
+                    ble_location = self._hass.states.get(entity_id)
+                    if ble_location and ble_location.state not in (
+                        "unavailable",
+                        "unknown",
+                    ):
+                        is_home = ble_location.state.lower() == "home"
+                        _LOGGER.debug(
+                            "Vehicle location from %s: %s (at_home=%s)",
+                            entity_id,
+                            ble_location.state,
+                            is_home,
+                        )
+                        return is_home
+
         _LOGGER.warning("Could not determine vehicle location - no location entity found")
         return True  # Default to True to not block commands if we can't check
 
@@ -22002,6 +22035,7 @@ def _get_ev_display_coordinator(hass, entry):
             "saj_h2_coordinator": "saj_h2",
             "fronius_reserva_coordinator": "fronius_reserva",
             "neovolt_coordinator": "neovolt",
+            "solplanet_coordinator": "solplanet",
             "solaredge_coordinator": "solaredge",
             "anker_solix_coordinator": "anker_solix",
             "amber_smartshift_coordinator": "amber_smartshift",
@@ -22165,7 +22199,7 @@ class EVLoadpointStatusView(HomeAssistantView):
             "foxess_coordinator",
             "goodwe_coordinator", "alphaess_coordinator", "esy_sunhome_coordinator",
             "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator",
-            "neovolt_coordinator", "solaredge_coordinator", "anker_solix_coordinator",
+            "neovolt_coordinator", "solplanet_coordinator", "solaredge_coordinator", "anker_solix_coordinator",
             "custom_energy_coordinator",
         ):
             coordinator = entry_data.get(key)
@@ -25773,46 +25807,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             battery_capacities_kwh=list(neovolt_battery_capacities_kwh or []),
         )
     elif is_solplanet:
-        solplanet_entry_id = source_config_entry_id or entry.options.get(
-            CONF_SOLPLANET_CONFIG_ENTRY_ID,
-            entry.data.get(CONF_SOLPLANET_CONFIG_ENTRY_ID),
+        solplanet_entry_id = source_config_entry_id or _entry_value(
+            CONF_SOLPLANET_CONFIG_ENTRY_ID
         )
         if not solplanet_entry_id:
             raise ConfigEntryNotReady(
                 "No Solplanet integration selected. Open PowerSync settings "
                 "and select the Solplanet integration."
             )
-        solplanet_battery_capacity_kwh = _entry_value(
+        battery_capacity_kwh = _entry_value(
             CONF_SOLPLANET_BATTERY_CAPACITY_KWH
         )
-        solplanet_max_charge_kw = _entry_value(CONF_SOLPLANET_MAX_CHARGE_KW)
-        solplanet_max_discharge_kw = _entry_value(CONF_SOLPLANET_MAX_DISCHARGE_KW)
-        persisted_solplanet_values = {
-            CONF_SOLPLANET_BATTERY_CAPACITY_KWH: solplanet_battery_capacity_kwh,
-            CONF_SOLPLANET_MAX_CHARGE_KW: solplanet_max_charge_kw,
-            CONF_SOLPLANET_MAX_DISCHARGE_KW: solplanet_max_discharge_kw,
-        }
-        if any(value is None for value in persisted_solplanet_values.values()):
+        inverter_ac_limit_kw = _entry_value(
+            CONF_SOLPLANET_INVERTER_AC_LIMIT_KW
+        )
+        if battery_capacity_kwh is None or inverter_ac_limit_kw is None:
             raise ConfigEntryNotReady(
                 "Solplanet battery settings are missing. Open PowerSync settings "
                 "and save the Solplanet battery configuration."
             )
         try:
-            solplanet_battery_capacity_kwh = float(solplanet_battery_capacity_kwh)
-            solplanet_max_charge_kw = float(solplanet_max_charge_kw)
-            solplanet_max_discharge_kw = float(solplanet_max_discharge_kw)
+            battery_capacity_kwh = float(battery_capacity_kwh)
+            inverter_ac_limit_kw = float(inverter_ac_limit_kw)
         except (TypeError, ValueError) as err:
             raise ConfigEntryNotReady(
                 "Solplanet battery settings are invalid. Open PowerSync settings "
                 "and save the Solplanet battery configuration."
             ) from err
         if (
-            solplanet_battery_capacity_kwh <= 0
-            or solplanet_max_charge_kw <= 0
-            or solplanet_max_discharge_kw <= 0
-            or not math.isfinite(solplanet_battery_capacity_kwh)
-            or not math.isfinite(solplanet_max_charge_kw)
-            or not math.isfinite(solplanet_max_discharge_kw)
+            battery_capacity_kwh <= 0
+            or inverter_ac_limit_kw <= 0
+            or not math.isfinite(battery_capacity_kwh)
+            or not math.isfinite(inverter_ac_limit_kw)
         ):
             raise ConfigEntryNotReady(
                 "Solplanet battery settings must be greater than zero. Open "
@@ -25824,9 +25850,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         solplanet_coordinator = SolplanetEnergyCoordinator(
             hass,
             solplanet_entry_id=str(solplanet_entry_id),
-            battery_capacity_kwh=float(solplanet_battery_capacity_kwh),
-            max_charge_kw=float(solplanet_max_charge_kw),
-            max_discharge_kw=float(solplanet_max_discharge_kw),
+            battery_capacity_kwh=battery_capacity_kwh,
+            max_charge_kw=inverter_ac_limit_kw,
+            max_discharge_kw=inverter_ac_limit_kw,
+            inverter_ac_limit_kw=inverter_ac_limit_kw,
             entry_id=entry.entry_id,
         )
     elif is_solaredge:
@@ -25957,7 +25984,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             },
             entry_id=entry.entry_id,
         )
-    else:
+    elif active_battery_system == BATTERY_SYSTEM_TESLA:
         # Get initial Tesla API token and provider
         # Use get_tesla_api_token() which fetches fresh from tesla_fleet if available
         if not entry.data.get(CONF_TESLA_ENERGY_SITE_ID):
@@ -26007,6 +26034,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry_id=entry.entry_id,
             fleet_base_url=entry.data.get(CONF_FLEET_API_BASE_URL),
         )
+    else:
+        raise ConfigEntryNotReady(
+            f"Unsupported PowerSync battery system: {active_battery_system}"
+        )
 
     # Warm the local Powerwall coordinator before Tesla's first cloud refresh.
     # If Tesla live_status returns an empty response during startup, the Tesla
@@ -26040,6 +26071,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             foxess_coordinator, goodwe_coordinator, alphaess_coordinator,
             esy_sunhome_coordinator, solax_coordinator, saj_h2_coordinator,
             fronius_reserva_coordinator, neovolt_coordinator,
+            solplanet_coordinator,
             solaredge_coordinator, anker_solix_coordinator, custom_energy_coordinator,
         ):
             # A dual Sungrow site adds the component on its grid-facing primary
@@ -26274,6 +26306,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         or sigenergy_coordinator or sungrow_coordinator or alphaess_coordinator
         or esy_sunhome_coordinator or solax_coordinator or saj_h2_coordinator
         or fronius_reserva_coordinator or neovolt_coordinator
+        or solplanet_coordinator
         or solaredge_coordinator or anker_solix_coordinator or amber_smartshift_coordinator
     )
     if demand_charge_enabled and energy_coord_for_demand:
@@ -27201,6 +27234,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "saj_h2_coordinator",
                 "fronius_reserva_coordinator",
                 "neovolt_coordinator",
+                "solplanet_coordinator",
                 "solaredge_coordinator",
                 "anker_solix_coordinator",
             ):
@@ -27571,6 +27605,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "saj_h2_coordinator",
                 "fronius_reserva_coordinator",
                 "neovolt_coordinator",
+                "solplanet_coordinator",
                 "solaredge_coordinator",
                 "anker_solix_coordinator",
             ):
@@ -50681,6 +50716,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             elif is_neovolt:
                 battery_system = "neovolt"
                 energy_coordinator = neovolt_coordinator
+            elif is_solplanet:
+                battery_system = BATTERY_SYSTEM_SOLPLANET
+                energy_coordinator = solplanet_coordinator
             elif is_solaredge:
                 battery_system = "solaredge"
                 energy_coordinator = solaredge_coordinator
@@ -51573,6 +51611,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     fronius_reserva_coordinator if is_fronius_reserva else None,
                 ),
                 ("neovolt", neovolt_coordinator if is_neovolt else None),
+                ("solplanet", solplanet_coordinator if is_solplanet else None),
                 ("solaredge", solaredge_coordinator if is_solaredge else None),
                 ("anker_solix", anker_solix_coordinator if is_anker_solix else None),
             )
@@ -54020,6 +54059,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                       "foxess_coordinator", "goodwe_coordinator", "alphaess_coordinator",
                       "solax_coordinator", "saj_h2_coordinator",
                       "fronius_reserva_coordinator", "neovolt_coordinator",
+                      "solplanet_coordinator",
                       "solaredge_coordinator", "anker_solix_coordinator",
                       "custom_energy_coordinator"):
         coord = entry_data.get(coord_key)
@@ -54045,7 +54085,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for coord_key in ("sigenergy_coordinator", "sungrow_coordinator", "foxess_coordinator",
                       "goodwe_coordinator", "alphaess_coordinator", "esy_sunhome_coordinator",
                       "solax_coordinator", "saj_h2_coordinator", "fronius_reserva_coordinator",
-                      "neovolt_coordinator", "solaredge_coordinator", "anker_solix_coordinator"):
+                      "neovolt_coordinator", "solplanet_coordinator",
+                      "solaredge_coordinator", "anker_solix_coordinator"):
         coord = entry_data.get(coord_key)
         if coord and hasattr(coord, "async_shutdown"):
             try:
