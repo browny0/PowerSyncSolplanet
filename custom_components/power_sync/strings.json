@@ -961,7 +961,7 @@
           "amber_site_id": "If you have multiple Amber NMIs, select the one associated with this Powerwall.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in."
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). The control method depends on the selected battery system; supported DC solar curtailment has its own opt-in."
         },
         "submit": "Finish"
       },
@@ -1017,7 +1017,7 @@
           "ac_inverter_curtailment_enabled": "Enable separate AC-coupled inverter shutdown"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). The control method depends on the selected battery system; supported DC solar curtailment has its own opt-in.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold (negative earnings by default). Do not enable this for the hybrid battery inverter already configured as the battery system."
         },
         "submit": "Next"
@@ -2297,7 +2297,7 @@
           "update_amber_token": "Paste a new Amber API token to rotate it. Leave blank to keep your current token.",
           "auto_sync_enabled": "When enabled, PowerSync uploads a new TOU tariff schedule to your battery every 5 minutes based on current Amber prices.",
           "amber_forecast_type": "Predicted is balanced. Low assumes cheaper prices (more aggressive charging). High assumes expensive prices (more conservative).",
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). The control method depends on the selected battery system; supported DC solar curtailment has its own opt-in.",
           "spike_protection_enabled": "Block automatic Smart Optimization grid charging during Amber spike or potential-spike intervals. Keep real prices for charts and cost accounting. Native tariff sync raises protected buy rates to discourage charging. This does not block household imports or manual Force Charge.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold (negative earnings by default). Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "forecast_discrepancy_alert": "Send a mobile notification when Amber predicted and High (higher-price) forecasts diverge significantly. Indicates the forecast spread is large and conservative scheduling may be preferable.",
@@ -2685,7 +2685,7 @@
           "solar_production_grid_connected_entity": "Grid connected sensor (optional for Tesla)"
         },
         "data_description": {
-          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). This controls the battery/Tesla path only; supported DC solar curtailment has its own opt-in.",
+          "battery_curtailment_enabled": "Stop battery export when earnings fall below the configured threshold (negative earnings by default). The control method depends on the selected battery system; supported DC solar curtailment has its own opt-in.",
           "solplanet_meter_device_id": "Choose the Solplanet main grid meter. PowerSync selects it automatically only when exactly one meter with readable settings is available.",
           "ac_inverter_curtailment_enabled": "Shut down a separate AC-coupled or string solar inverter (Fronius, Sungrow, GoodWe, Enphase) when export earnings drop below the configured threshold (negative earnings by default). Do not enable this for the hybrid battery inverter already configured as the battery system.",
           "curtailment_export_threshold_cents": "The normal automatic trigger is below 0 c/kWh; export at exactly 0 c/kWh is not curtailed. A non-zero custom threshold retains a 0.2c/kWh release deadband.",

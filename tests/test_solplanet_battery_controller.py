@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-import sys
-import types
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPONENT_ROOT = ROOT / "custom_components" / "power_sync"
@@ -50,7 +49,7 @@ def _install_stubs() -> None:
 
 _install_stubs()
 
-from power_sync.inverters.solplanet import SolplanetBatteryController  # noqa: E402
+from power_sync.inverters.solplanet import SolplanetBatteryController
 
 
 class _FakeState:
@@ -266,6 +265,7 @@ def test_force_charge_caps_requested_power_at_configured_maximum():
         "pin": 5000,
         "pout": 10000,
     }
+    assert type(calls[0][2]["pin"]) is int
     assert calls[1][0:2] == ("select", "select_option")
     assert calls[1][2]["option"] == "Custom mode"
 
@@ -278,6 +278,7 @@ def test_force_charge_uses_requested_power_below_configured_maximum():
 
     schedule_call = hass.services.calls[0]
     assert schedule_call[2]["pin"] == 3000
+    assert type(schedule_call[2]["pin"]) is int
     assert schedule_call[2]["pout"] == 10000
 
 
@@ -306,6 +307,17 @@ def test_restore_clears_all_schedule_days_and_returns_to_self_consumption():
         "day": "all",
     }
     assert hass.services.calls[1][0:2] == ("select", "select_option")
+    assert hass.services.calls[1][2]["option"] == "Self-consumption mode"
+
+
+def test_restore_clears_schedule_when_persisted_force_ownership_is_recovered():
+    hass = _FakeHass()
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.restore_normal(clear_owned_schedule=True))
+
+    assert hass.services.calls[0][0:2] == ("solplanet", "clear_schedule")
+    assert hass.services.calls[0][2]["day"] == "all"
     assert hass.services.calls[1][2]["option"] == "Self-consumption mode"
 
 

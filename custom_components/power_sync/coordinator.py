@@ -12159,7 +12159,24 @@ class SolplanetEnergyCoordinator(
     async def restore_normal(self) -> bool:
         if not self._native_control_allowed("Solplanet restore_normal"):
             return False
-        return await self._controller.restore_normal()
+        domain_data = self.hass.data.get(DOMAIN, {})
+        runtime = (
+            domain_data.get(self._entry_id, {})
+            if isinstance(domain_data, dict)
+            else {}
+        )
+        force_state = (
+            runtime.get("force_mode_state")
+            if isinstance(runtime, dict)
+            else None
+        )
+        clear_owned_schedule = (
+            isinstance(force_state, dict)
+            and force_state.get("mode") in {"charge", "discharge"}
+        )
+        return await self._controller.restore_normal(
+            clear_owned_schedule=clear_owned_schedule
+        )
 
     async def set_backup_mode(self) -> bool:
         if not self._native_control_allowed("Solplanet set_backup_mode"):

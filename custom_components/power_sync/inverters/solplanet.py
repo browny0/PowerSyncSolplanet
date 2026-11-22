@@ -174,7 +174,7 @@ class SolplanetBatteryController:
             return None
         return str(state.state)
 
-    async def force_charge(self, duration_minutes: int, power_w: int | float) -> bool:
+    async def force_charge(self, duration_minutes: int, power_w: float) -> bool:
         """Schedule charging at the requested power, capped by the configured maximum."""
         charge_limit_w = self.charge_power_limit_w(power_w)
         return await self._set_temporary_schedule(
@@ -183,17 +183,17 @@ class SolplanetBatteryController:
             charge_power_w=charge_limit_w,
         )
 
-    def charge_power_limit_w(self, power_w: int | float) -> int:
+    def charge_power_limit_w(self, power_w: float) -> int:
         """Return the requested charge power capped by the configured maximum."""
         requested_w = float(power_w)
         if not math.isfinite(requested_w) or requested_w < 0:
             raise ValueError("Solplanet charge power must be a finite nonnegative value")
-        return min(self._max_charge_w, math.floor(requested_w))
+        return min(math.floor(self._max_charge_w), math.floor(requested_w))
 
     async def force_discharge(
         self,
         duration_minutes: int,
-        power_w: int | float,
+        power_w: float,
         *,
         solar_forecast_kw: float | None = None,
     ) -> bool:
@@ -213,7 +213,7 @@ class SolplanetBatteryController:
 
     def discharge_power_limit_w(
         self,
-        power_w: int | float,
+        power_w: float,
         *,
         solar_forecast_kw: float | None = None,
     ) -> int:
@@ -245,7 +245,7 @@ class SolplanetBatteryController:
 
     def forecast_limited_discharge_power_changed(
         self,
-        power_w: int | float,
+        power_w: float,
         *,
         solar_forecast_kw: float | None = None,
         tolerance_w: int = 100,
@@ -317,7 +317,7 @@ class SolplanetBatteryController:
                 else (
                     charge_power_w
                     if mode == "charge" and charge_power_w is not None
-                    else int(round(self._max_charge_w))
+                    else round(self._max_charge_w)
                 )
             )
             pout = (
@@ -326,7 +326,7 @@ class SolplanetBatteryController:
                 else (
                     discharge_power_w
                     if mode == "discharge" and discharge_power_w is not None
-                    else int(round(self._max_discharge_w))
+                    else round(self._max_discharge_w)
                 )
             )
 
@@ -364,11 +364,13 @@ class SolplanetBatteryController:
         now: datetime = dt_util.now()
         return now.weekday(), now.hour, 30 if now.minute >= 30 else 0
 
-    async def restore_normal(self) -> bool:
+    async def restore_normal(self, *, clear_owned_schedule: bool = False) -> bool:
         await self._ensure_entities()
         try:
             day = self._active_schedule_day
-            if day is not None and self._active_schedule_slot is not None:
+            if clear_owned_schedule or (
+                day is not None and self._active_schedule_slot is not None
+            ):
                 await self._clear_schedule()
             await self._set_mode(_MODE_SELF_CONSUMPTION)
             self._active_schedule_day = None
@@ -403,7 +405,7 @@ class SolplanetBatteryController:
     async def get_backup_reserve(self) -> int | None:
         await self._ensure_entities()
         value = self._read_number("min_soc")
-        return int(round(value)) if value is not None else None
+        return round(value) if value is not None else None
 
     async def _ensure_entities(self) -> None:
         if not self._entity_map:

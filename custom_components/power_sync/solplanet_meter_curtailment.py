@@ -82,7 +82,7 @@ def zero_export_limit_service_data(device_id: str) -> dict[str, Any]:
 def meter_restore_payload(meter_req: dict[str, Any]) -> dict[str, Any]:
     """Validate and preserve the complete captured meter settings payload."""
     if not isinstance(meter_req, dict):
-        raise ValueError("Solplanet meter settings are unavailable")
+        raise TypeError("Solplanet meter settings must be a mapping")
 
     regulate = _required_int(meter_req, "regulate")
     if regulate == 5:

@@ -61,12 +61,13 @@ repeatedly rewriting an unchanged schedule.
 
 PowerSync requires the integration's **Replace Schedule Day** and
 **Clear Schedule** actions. A force charge/discharge replaces that day's
-complete slot list with the temporary slot, sets `pin` to the configured
-charge maximum and `pout` to the configured discharge maximum (or the
-forecast-aware discharge cap), then selects Custom mode. On restore, PowerSync
-calls **Clear Schedule** with `day: all` and selects Self-consumption mode,
-removing schedule slots from every day. Update the Solplanet integration if
-either action is unavailable.
+complete slot list with the temporary slot. `pin` uses the requested charge
+power, capped at the configured charge maximum; `pout` uses the requested
+discharge power, capped by the configured discharge maximum and, when fresh
+solar forecasts are available, inverter AC headroom. It then selects Custom
+mode. On restore, PowerSync calls **Clear Schedule** with `day: all` and
+selects Self-consumption mode, removing schedule slots from every day. Update
+the Solplanet integration if either action is unavailable.
 
 Temporary charge, discharge, and zero-power hold use the most recent half-hour
 boundary. Solplanet's integration restricts a slot to 1–4 whole hours and

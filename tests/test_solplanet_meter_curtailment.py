@@ -13,7 +13,7 @@ if "power_sync" not in sys.modules:
     power_sync.__path__ = [str(COMPONENT_ROOT)]
     sys.modules["power_sync"] = power_sync
 
-from power_sync.solplanet_meter_curtailment import (  # noqa: E402
+from power_sync.solplanet_meter_curtailment import (
     meter_restore_payload,
     resolve_solplanet_meter,
     solplanet_meter_devices,
@@ -179,6 +179,9 @@ def test_restores_disabled_and_zero_power_modes(meter_req):
 
 
 def test_refuses_incomplete_or_unrestorable_settings():
+    with pytest.raises(TypeError, match="must be a mapping"):
+        meter_restore_payload(None)
+
     with pytest.raises(ValueError, match="missing lostCurrMax"):
         meter_restore_payload(
             {
