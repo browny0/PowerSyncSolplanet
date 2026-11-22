@@ -159,6 +159,7 @@ def _install_import_stubs() -> None:
         "FroniusReservaEnergyCoordinator",
         "NeovoltEnergyCoordinator",
         "SolarEdgeEnergyCoordinator",
+        "SolplanetEnergyCoordinator",
         "AnkerSolixEnergyCoordinator",
         "DemandChargeCoordinator",
         "AEMOSensorCoordinator",
@@ -5494,6 +5495,34 @@ def test_manual_start_uses_healthy_suffixed_provider_for_same_vehicle(monkeypatc
     assert asyncio.run(view._is_vehicle_at_home(vin)) is True
     assert asyncio.run(view._is_vehicle_plugged_in(other_vin)) is False
     assert asyncio.run(view._is_vehicle_at_home(other_vin)) is False
+
+
+@pytest.mark.parametrize(
+    ("tracker_entity", "tracker_state", "expected_at_home"),
+    [
+        ("device_tracker.tesla_ble", "home", True),
+        ("device_tracker.garage_bridge", "home", True),
+        ("device_tracker.garage_bridge_location", "not_home", False),
+    ],
+)
+def test_ble_manual_start_uses_standalone_tesla_ble_location(
+    tracker_entity, tracker_state, expected_at_home
+):
+    power_sync = _power_sync_module()
+    entry = _Entry()
+    entry.data = {
+        "ev_provider": "tesla_ble",
+        "tesla_ble_entity_prefix": "garage_bridge",
+    }
+    hass = _Hass(
+        [_State(tracker_entity, tracker_state)],
+        config_entries=[entry],
+    )
+    view = power_sync.EVVehicleCommandView(hass)
+
+    assert asyncio.run(
+        view._is_vehicle_at_home("ble_garage_bridge")
+    ) is expected_at_home
 
 
 @pytest.mark.parametrize(

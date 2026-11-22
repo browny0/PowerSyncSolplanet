@@ -17810,6 +17810,33 @@ class EVVehicleCommandView(HomeAssistantView):
                 _LOGGER.debug(f"Vehicle location from {location_entity}: {state.state} (at_home={is_home})")
                 return is_home
 
+        # BLE bridges may expose a tracker named after their configured
+        # entity prefix rather than as a Tesla device or with a _location suffix.
+        config = self._get_powersync_config()
+        ev_provider = config.get(CONF_EV_PROVIDER, EV_PROVIDER_FLEET_API)
+        if ev_provider in (EV_PROVIDER_TESLA_BLE, EV_PROVIDER_BOTH):
+            ble_prefix = _ble_prefix_for_vehicle(
+                self._hass, config, vehicle_vin
+            )
+            if ble_prefix:
+                for entity_id in (
+                    f"device_tracker.{ble_prefix}",
+                    f"device_tracker.{ble_prefix}_location",
+                ):
+                    ble_location = self._hass.states.get(entity_id)
+                    if ble_location and ble_location.state not in (
+                        "unavailable",
+                        "unknown",
+                    ):
+                        is_home = ble_location.state.lower() == "home"
+                        _LOGGER.debug(
+                            "Vehicle location from %s: %s (at_home=%s)",
+                            entity_id,
+                            ble_location.state,
+                            is_home,
+                        )
+                        return is_home
+
         _LOGGER.warning("Could not determine vehicle location - no location entity found")
         return True  # Default to True to not block commands if we can't check
 
