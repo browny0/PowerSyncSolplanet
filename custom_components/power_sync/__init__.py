@@ -42362,6 +42362,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # not rely on Restore to suppress force modes for 30 min.
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
 
+        # Check if optimizer is active (and not in monitoring mode) — suppress routine notifications
+        # (optimizer transitions between force modes frequently; AEMO spikes have their own notification)
+        # Monitoring mode doesn't execute actions, so notifications should still fire.
+        suppress_notification = False
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        opt_coordinator = entry_data.get("optimization_coordinator")
+        if opt_coordinator and getattr(opt_coordinator, '_enabled', False):
+            monitoring_mode = entry.options.get(
+                CONF_MONITORING_MODE, entry.data.get(CONF_MONITORING_MODE, False)
+            )
+            if not monitoring_mode:
+                suppress_notification = True
+
         if active_battery_system == BATTERY_SYSTEM_SOLPLANET:
             solplanet_restore_coord = entry_data.get("solplanet_coordinator")
             if not solplanet_restore_coord:
@@ -42376,7 +42389,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 return _restore_not_completed("Solplanet restore normal failed")
             if not restored:
-                return _restore_not_completed("Solplanet did not confirm normal operation")
+                return _restore_not_completed(
+                    "Solplanet did not confirm normal operation"
+                )
 
             for state in (
                 force_charge_state,
@@ -42395,10 +42410,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_charge_state["duration"] = None
             force_discharge_state["duration"] = None
             await persist_force_mode_state()
-            if suppress_notification is False:
+            if not suppress_notification:
                 try:
                     from .automations.actions import _send_expo_push
-                    await _send_expo_push(hass, "Battery", "Normal operation restored")
+                    await _send_expo_push(
+                        hass,
+                        "Battery",
+                        "Normal operation restored",
+                    )
                 except Exception as notify_err:
                     _LOGGER.debug(
                         "Could not send Solplanet restore notification: %s",
@@ -42415,20 +42434,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "duration": 0,
             })
             _LOGGER.info("Solplanet normal operation restored")
-            return {"success": True, "error": None} if confirm_restore or response_requested else None
-
-        # Check if optimizer is active (and not in monitoring mode) — suppress routine notifications
-        # (optimizer transitions between force modes frequently; AEMO spikes have their own notification)
-        # Monitoring mode doesn't execute actions, so notifications should still fire.
-        suppress_notification = False
-        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-        opt_coordinator = entry_data.get("optimization_coordinator")
-        if opt_coordinator and getattr(opt_coordinator, '_enabled', False):
-            monitoring_mode = entry.options.get(
-                CONF_MONITORING_MODE, entry.data.get(CONF_MONITORING_MODE, False)
+            return (
+                {"success": True, "error": None}
+                if confirm_restore or response_requested
+                else None
             )
-            if not monitoring_mode:
-                suppress_notification = True
 
         # SolarEdge must keep its existing force lifecycle intact until its
         # controller confirms the restore. Other integrations retain the
