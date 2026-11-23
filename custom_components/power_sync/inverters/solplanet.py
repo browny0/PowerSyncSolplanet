@@ -155,6 +155,11 @@ class SolplanetBatteryController:
         battery_kw = (battery_w or 0.0) / 1000
         grid_kw = (grid_w or 0.0) / 1000
         solar_kw = max(0.0, solar_w or 0.0) / 1000
+        load_kw = (
+            max(0.0, solar_kw + grid_kw + battery_kw)
+            if telemetry_ready
+            else None
+        )
         return {
             "telemetry_ready": telemetry_ready,
             "battery_power": battery_kw,
@@ -162,7 +167,7 @@ class SolplanetBatteryController:
             "battery_soh": soh,
             "solar_power": solar_kw,
             "grid_power": grid_kw,
-            "load_power": max(0.0, solar_kw + grid_kw + battery_kw),
+            "load_power": load_kw,
             "load_power_estimated": True,
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "battery_max_charge_power_w": self._max_charge_w,

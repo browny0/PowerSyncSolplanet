@@ -227,6 +227,18 @@ def test_connect_discovers_entities_and_returns_canonical_telemetry():
     assert status["battery_max_discharge_power_w"] == 10000
 
 
+def test_unavailable_required_telemetry_does_not_publish_home_load_zero():
+    hass = _FakeHass()
+    hass.states._states.pop("sensor.battery_eq1_battery_power")
+    controller = _controller(hass)
+
+    assert asyncio.run(controller.connect())
+    status = controller.get_status()
+
+    assert status["telemetry_ready"] is False
+    assert status["load_power"] is None
+
+
 def test_soc_discovery_ignores_tesla_vehicle_state_of_charge():
     hass = _FakeHass()
     hass.states._states["sensor.tesla_car_state_of_charge"] = _FakeState(
