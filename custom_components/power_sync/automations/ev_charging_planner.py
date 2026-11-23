@@ -7022,8 +7022,9 @@ class AutoScheduleExecutor:
                 else None
             )
         else:
+            # Grid-based: zero export/import is valid; only None (unavailable) blocks
             required_missing = (
-                "Grid power" if grid_power is None
+                "Telemetry" if grid_power is None and solar_power is None
                 else None
             )
         if required_missing is not None:
