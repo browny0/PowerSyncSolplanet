@@ -7009,9 +7009,26 @@ class AutoScheduleExecutor:
         # a positive start or be synthesized into zero measured site load.
         solar_power = live_status.get("solar_power")
         load_power = live_status.get("load_power")
-        if solar_power is None or load_power is None:
+        grid_power = live_status.get("grid_power")
+        solar_surplus_config = await self._get_solar_surplus_config()
+        surplus_method = str(
+            solar_surplus_config.get("surplus_calculation", "grid_based")
+        ).strip().lower()
+
+        if surplus_method == "direct":
+            required_missing = (
+                "Solar power" if solar_power is None
+                else "Home Load" if load_power is None
+                else None
+            )
+        else:
+            required_missing = (
+                "Grid power" if grid_power is None
+                else None
+            )
+        if required_missing is not None:
             state.last_decision = "waiting"
-            state.last_decision_reason = "Home Load unavailable" if load_power is None else "Solar power unavailable"
+            state.last_decision_reason = f"{required_missing} unavailable"
             self._sync_active_charging_preserve_intent(
                 vehicle_id, effective_preserve_home_battery, state, state.last_decision_reason,
             )
@@ -7075,11 +7092,24 @@ class AutoScheduleExecutor:
         # Past the block above the level is known (or held at 100% while a
         # running charge carries on), so the shared floor rule can use it.
         known_battery_soc = battery_soc
-        solar_power_kw = solar_power / 1000
-        load_power_kw = load_power / 1000
+        solar_power_kw = (
+            solar_power / 1000
+            if solar_power is not None
+            else 0.0
+        )
+        if surplus_method == "direct":
+            load_power_kw = load_power / 1000
+            current_surplus_kw = max(0, solar_power_kw - load_power_kw)
+        else:
+            from .actions import _calculate_solar_surplus
 
-        # Calculate current surplus
-        current_surplus_kw = max(0, solar_power_kw - load_power_kw)
+
+            current_surplus_kw = _calculate_solar_surplus(
+                live_status,
+                (live_status.get("ev_power") or 0) / 1000,
+                await self._get_solar_surplus_config(),
+                self.hass,
+            )
 
         # Use price from parameter or estimate
         if current_price_cents is None:
@@ -7400,9 +7430,14 @@ class AutoScheduleExecutor:
                     if not _use_deadline_grid_fallback():
                         should_charge = False
                         reason = f"Surplus {current_surplus_kw:.1f}kW < min {min_surplus:.1f}kW"
+                        surplus_basis = (
+                            f"load={load_power_kw:.1f}kW"
+                            if surplus_method == "direct"
+                            else f"grid={grid_power / 1000:.1f}kW"
+                        )
                         _LOGGER.info(
                             f"Auto-schedule: In solar window but no surplus - "
-                            f"solar={solar_power_kw:.1f}kW, load={load_power_kw:.1f}kW, "
+                            f"solar={solar_power_kw:.1f}kW, {surplus_basis}, "
                             f"surplus={current_surplus_kw:.1f}kW < {min_surplus:.1f}kW needed "
                             f"(phases={settings.phases})"
                         )

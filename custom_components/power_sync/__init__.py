@@ -22179,7 +22179,6 @@ class EVLoadpointStatusView(HomeAssistantView):
         load_power_kw = None
         battery_soc = None
         is_curtailed = False
-        raw_home_load_kw = None
 
         def finite_value(value):
             try:
@@ -22210,9 +22209,6 @@ class EVLoadpointStatusView(HomeAssistantView):
                 load_power_kw = finite_value(data.get("load_power"))
                 battery_soc = finite_value(data.get("battery_level"))
                 is_curtailed = data.get("is_curtailed", False) is True
-                raw_home_load_kw = finite_value(data.get("raw_home_load_power"))
-                if load_power_kw is None:
-                    load_power_kw = raw_home_load_kw
                 break
 
         return {
