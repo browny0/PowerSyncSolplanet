@@ -18,12 +18,13 @@ _ENTITY_SUFFIXES: dict[str, tuple[str, ...]] = {
     "battery_soh": ("battery_state_of_health", "state_of_health"),
     "solar_power": ("pv_power",),
     "grid_power": ("meter_power",),
+    "load_power": ("grid_load_power",),
     "work_mode": ("work_mode",),
     "schedule_input_power": ("schedule_input_power",),
     "schedule_output_power": ("schedule_output_power",),
     "schedule_configured": ("schedule_configured",),
 }
-_OPTIONAL_ENTITY_KEYS = {"battery_soh"}
+_OPTIONAL_ENTITY_KEYS = {"battery_soh", "load_power"}
 
 _DAY_NAMES = ("Mon", "Tus", "Wen", "Thu", "Fri", "Sat", "Sun")
 _MODE_SELF_CONSUMPTION = "Self-consumption mode"
@@ -155,11 +156,21 @@ class SolplanetBatteryController:
         battery_kw = (battery_w or 0.0) / 1000
         grid_kw = (grid_w or 0.0) / 1000
         solar_kw = max(0.0, solar_w or 0.0) / 1000
-        load_kw = (
-            max(0.0, solar_kw + grid_kw + battery_kw)
-            if telemetry_ready
-            else None
-        )
+        
+        # Prefer measured load from Solplanet meter sensor if available
+        measured_load_w = self._read_number("load_power")
+        if measured_load_w is not None:
+            load_kw = max(0.0, measured_load_w) / 1000
+            load_power_estimated = False
+        else:
+            # Fall back to computed load from energy balance when telemetry complete
+            load_kw = (
+                max(0.0, solar_kw + grid_kw + battery_kw)
+                if telemetry_ready
+                else None
+            )
+            load_power_estimated = True
+        
         return {
             "telemetry_ready": telemetry_ready,
             "battery_power": battery_kw,
@@ -168,7 +179,7 @@ class SolplanetBatteryController:
             "solar_power": solar_kw,
             "grid_power": grid_kw,
             "load_power": load_kw,
-            "load_power_estimated": True,
+            "load_power_estimated": load_power_estimated,
             "battery_capacity_kwh": self._battery_capacity_kwh,
             "battery_max_charge_power_w": self._max_charge_w,
             "battery_max_discharge_power_w": self._max_discharge_w,
