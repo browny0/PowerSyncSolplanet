@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import math
 from pathlib import Path
 from types import SimpleNamespace
-
-import importlib.util
 
 import pytest
 
@@ -368,6 +367,32 @@ def test_loadpoint_site_snapshot_preserves_unavailable_home_load():
 
     coordinator.data["load_power"] = 0.0
     assert site_snapshot(view)["load_power_kw"] == 0.0
+
+
+def test_loadpoint_site_snapshot_falls_back_to_raw_home_load():
+    site_snapshot = _extract_site_snapshot()
+    coordinator = SimpleNamespace(
+        data={
+            "solar_power": 7.27,
+            "grid_power": 10.0,
+            "battery_power": -7.8,
+            "load_power": None,
+            "raw_home_load_power": 4.2,
+            "battery_level": 53,
+        },
+    )
+    view = SimpleNamespace(
+        _hass=SimpleNamespace(
+            data={
+                "power_sync": {
+                    "entry-1": {"solplanet_coordinator": coordinator},
+                },
+            },
+        ),
+        _config_entry=SimpleNamespace(entry_id="entry-1"),
+    )
+
+    assert site_snapshot(view)["load_power_kw"] == 4.2
 
 
 def test_loadpoint_site_snapshot_keeps_stale_core_telemetry_unavailable():

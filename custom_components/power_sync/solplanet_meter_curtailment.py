@@ -106,15 +106,16 @@ def meter_restore_payload(meter_req: dict[str, Any]) -> dict[str, Any]:
         return copy.deepcopy(meter_req)
 
     if ctrl_type == 1:
-        for key in (
-            "maxOutCurr",
-            "maxInCurr",
-            "currDiff",
-            "lostTime",
-            "lostCurrMax",
-        ):
-            _required_int(meter_req, key)
-        return copy.deepcopy(meter_req)
+        max_out_curr = _required_int(meter_req, "maxOutCurr")
+        _required_int(meter_req, "maxInCurr")
+        _required_int(meter_req, "currDiff")
+        _required_int(meter_req, "lostTime")
+        lost_curr_max = _required_int(meter_req, "lostCurrMax")
+
+        payload = copy.deepcopy(meter_req)
+        if lost_curr_max > max_out_curr:
+            payload["lostCurrMax"] = max_out_curr
+        return payload
 
     if ctrl_type == 2:
         _required_int(meter_req, "lostTime")

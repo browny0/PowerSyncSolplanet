@@ -167,6 +167,23 @@ def test_restores_current_limit():
     assert meter_restore_payload(meter_req) == meter_req
 
 
+def test_clamps_communication_loss_current_to_output_limit():
+    meter_req = {
+        "regulate": 10,
+        "ctrlType": 1,
+        "maxOutCurr": 62,
+        "maxInCurr": 62,
+        "currDiff": 0,
+        "lostTime": 30,
+        "lostCurrMax": 80,
+    }
+
+    restored = meter_restore_payload(meter_req)
+
+    assert restored["lostCurrMax"] == 62
+    assert meter_req["lostCurrMax"] == 80
+
+
 @pytest.mark.parametrize(
     "meter_req",
     [
