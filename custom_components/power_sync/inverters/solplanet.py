@@ -88,7 +88,7 @@ class SolplanetBatteryController:
         entries = er.async_entries_for_config_entry(registry, self._config_entry_id)
         entity_map: dict[str, str] = {}
         for key, suffixes in _ENTITY_SUFFIXES.items():
-            if key == "battery_soh":
+            if key in ("battery_soh", "load_power"):
                 continue
             domain = self._entity_domain(key)
             for entry in entries:
@@ -106,6 +106,11 @@ class SolplanetBatteryController:
         )
         if battery_soh:
             entity_map["battery_soh"] = battery_soh
+        load_power = self._find_optional_entity_in_entries(
+            entries, "sensor", _ENTITY_SUFFIXES["load_power"]
+        )
+        if load_power:
+            entity_map["load_power"] = load_power
         optional_min_soc = self._find_optional_entity_in_entries(entries, "number", ("soc_min",))
         if optional_min_soc:
             entity_map["min_soc"] = optional_min_soc
