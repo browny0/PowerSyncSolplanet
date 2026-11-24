@@ -57,6 +57,9 @@ class AutomationStore:
             # Ensure push_tokens exists (for upgrades from older versions)
             if "push_tokens" not in self._data:
                 self._data["push_tokens"] = {}
+        else:
+            # File doesn't exist; persist the default empty state to create it
+            await self.async_save()
         _LOGGER.debug(f"Loaded {len(self._data.get('automations', []))} automations from storage")
         _LOGGER.debug(f"Loaded {len(self._data.get('push_tokens', {}))} push tokens from storage")
 
