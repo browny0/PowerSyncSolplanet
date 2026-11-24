@@ -11301,7 +11301,21 @@ class PriceLevelChargingExecutor:
         except Exception as e:
             _LOGGER.debug(f"Error in EV platform battery sensor search: {e}")
 
-        _LOGGER.warning(f"Could not find EV battery level from any source (VIN: {vehicle_vin})")
+        # Fallback for Tesla BLE + Fleet setups: if a Fleet VIN was provided but no
+        # battery found via Fleet entities, try checking all BLE sensors as a last resort
+        if vehicle_vin and not vehicle_vin.startswith("ble_"):
+            # Try the standard Tesla BLE entity patterns
+            ble_state = get_tesla_ble_battery_state(self.hass, "tesla_ble")
+            if ble_state and ble_state.state not in ("unavailable", "unknown", "None", None):
+                try:
+                    level = float(ble_state.state)
+                    if 0 <= level <= 100:
+                        _LOGGER.debug(f"Found Tesla BLE battery level from fallback: {level}%")
+                        return int(level)
+                except (ValueError, TypeError):
+                    pass
+
+        _LOGGER.debug(f"Could not find EV battery level from any source (VIN: {vehicle_vin})")
         return None
 
     def _is_grid_charging_blocked_now(self) -> bool:
