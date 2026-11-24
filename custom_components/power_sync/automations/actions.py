@@ -163,6 +163,30 @@ API_CREDIT_ERROR_PATTERNS = [
 # provider-specific raw API when a supported inverter coordinator is present.
 from .live_status import SITE_LIVE_STATUS_COORDINATOR_KEYS as EV_LIVE_STATUS_COORDINATOR_KEYS  # noqa: E402
 
+EV_LIVE_STATUS_COORDINATOR_KEYS = tuple(
+    dict.fromkeys(
+        (
+            *EV_LIVE_STATUS_COORDINATOR_KEYS,
+            "tesla_coordinator",
+            "sigenergy_coordinator",
+            "sungrow_coordinator",
+            "foxess_coordinator",
+            "goodwe_coordinator",
+            "alphaess_coordinator",
+            "esy_sunhome_coordinator",
+            "solax_coordinator",
+            "saj_h2_coordinator",
+            "fronius_reserva_coordinator",
+            "neovolt_coordinator",
+            "solaredge_coordinator",
+            "anker_solix_coordinator",
+            "solplanet_coordinator",
+            "amber_smartshift_coordinator",
+            "custom_energy_coordinator",
+        )
+    )
+)
+
 
 def _is_api_credit_error(error_message: str) -> bool:
     """Check if an error message indicates API credit exhaustion."""
