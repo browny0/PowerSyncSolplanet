@@ -12103,7 +12103,7 @@ class SolplanetEnergyCoordinator(
         data = {
             "telemetry_ready": telemetry_ready,
             "solar_power": solar_kw,
-            "solar_power_valid": telemetry_ready,
+            "solar_power_valid": solar_kw is not None,
             "grid_power": grid_kw,
             "battery_power": battery_kw,
             "load_power": load_kw,
