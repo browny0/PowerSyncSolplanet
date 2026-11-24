@@ -12116,6 +12116,10 @@ class SolplanetEnergyCoordinator(
             "battery_capacity_kwh": status["battery_capacity_kwh"],
             "battery_max_charge_power_w": status["battery_max_charge_power_w"],
             "battery_max_discharge_power_w": status["battery_max_discharge_power_w"],
+            "battery_max_charge_power": status["battery_max_charge_power_w"] / 1000.0 if status["battery_max_charge_power_w"] else None,
+            "battery_max_discharge_power": status["battery_max_discharge_power_w"] / 1000.0 if status["battery_max_discharge_power_w"] else None,
+            "last_update": dt_util.utcnow(),
+            "control_available": self.startup_control_ready(),
             "mode": status["mode"],
             "energy_summary": self._energy_acc.as_dict(),
         }
