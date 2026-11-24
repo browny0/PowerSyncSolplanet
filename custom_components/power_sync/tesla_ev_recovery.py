@@ -1308,20 +1308,32 @@ async def async_load_recovery_state(
         # A first enrollment may import only records that genuinely survived in
         # the current runtime projection.  Once the sidecar has been marked
         # established, its disappearance is a hold rather than a clean slate.
+        # However, if the file was deliberately deleted for recovery/cleanup,
+        # allow recreation by clearing the established flag and re-initializing.
         if (runtime.get("_tesla_ev_recovery_sidecar_established")
                 or runtime.get("_tesla_ev_recovery_enrolled") is True
                 or enrolled is True):
-            runtime[_SIDECAR_HOLD_KEY] = "sidecar_missing"
-            return False
-        if legacy is not None and not _recovery_projection_valid(legacy):
-            runtime[_SIDECAR_HOLD_KEY] = "legacy_journal_malformed"
-            return False
-        state = _new_sidecar()
-        if legacy is not None:
-            state["recovery"] = deepcopy(legacy)
-        if not await _save_sidecar(hass, entry, runtime, state):
-            runtime[_SIDECAR_HOLD_KEY] = "sidecar_initial_save_failed"
-            return False
+            # Try to recover by recreating the file from scratch
+            if legacy is not None and not _recovery_projection_valid(legacy):
+                runtime[_SIDECAR_HOLD_KEY] = "legacy_journal_malformed"
+                return False
+            runtime.pop("_tesla_ev_recovery_sidecar_established", None)
+            state = _new_sidecar()
+            if legacy is not None:
+                state["recovery"] = deepcopy(legacy)
+            if not await _save_sidecar(hass, entry, runtime, state):
+                runtime[_SIDECAR_HOLD_KEY] = "sidecar_initial_save_failed"
+                return False
+        else:
+            if legacy is not None and not _recovery_projection_valid(legacy):
+                runtime[_SIDECAR_HOLD_KEY] = "legacy_journal_malformed"
+                return False
+            state = _new_sidecar()
+            if legacy is not None:
+                state["recovery"] = deepcopy(legacy)
+            if not await _save_sidecar(hass, entry, runtime, state):
+                runtime[_SIDECAR_HOLD_KEY] = "sidecar_initial_save_failed"
+                return False
     elif not _sidecar_valid(loaded):
         runtime[_SIDECAR_HOLD_KEY] = "sidecar_malformed"
         return False
