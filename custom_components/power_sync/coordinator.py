@@ -12110,7 +12110,7 @@ class SolplanetEnergyCoordinator(
             "raw_home_load_power": load_kw if telemetry_ready else None,
             "site_load_power": load_kw if telemetry_ready else None,
             "home_load_basis": "includes_ev" if telemetry_ready else "unknown",
-            "load_power_estimated": load_power_estimated,
+            "load_power_estimated": status.get("load_power_estimated", True),
             "battery_level": status["battery_level"],
             "battery_soh": status.get("battery_soh"),
             "battery_capacity_kwh": status["battery_capacity_kwh"],
