@@ -3321,7 +3321,7 @@ def test_solar_surplus_parallel_reserve_blocks_sigenergy_battery_charge_surplus(
             "household_buffer_kw": 2.0,
             "allow_parallel_charging": True,
             "max_battery_charge_rate_kw": 5.0,
-            "min_battery_soc": 20,
+            "min_battery_soc": 80,
         },
     )
 
@@ -3343,11 +3343,138 @@ def test_solar_surplus_parallel_reserve_allows_excess_above_battery_rate():
             "household_buffer_kw": 1.0,
             "allow_parallel_charging": True,
             "max_battery_charge_rate_kw": 5.0,
-            "min_battery_soc": 20,
+            "min_battery_soc": 80,
         },
     )
 
     assert surplus_kw == 2.0
+
+
+@pytest.mark.parametrize("method", ["direct", "grid_based"])
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("battery_soc", [80, 81])
+@pytest.mark.parametrize("ev_kw", [0.0, 1.0])
+def test_solar_surplus_redirects_battery_charge_at_minimum(
+    method, parallel, battery_soc, ev_kw,
+):
+    status = {
+        "battery_soc": battery_soc,
+        "solar_power": 3000,
+        "load_power": (800 + ev_kw * 1000),
+        "grid_power": -200 + ev_kw * 1000,
+        "battery_power": -2000,
+    }
+    config = {
+        "surplus_calculation": method,
+        "household_buffer_kw": 0.5,
+        "home_battery_minimum": 80,
+        "min_battery_soc": 20,
+        "allow_parallel_charging": parallel,
+        "max_battery_charge_rate_kw": 5.0,
+    }
+    assert actions._calculate_solar_surplus(status, ev_kw, config) == pytest.approx(1.7)
+
+
+@pytest.mark.parametrize("soc", [79, None, float("nan"), float("inf"), True, -1, 101])
+def test_solar_surplus_direct_keeps_battery_priority_until_minimum(soc):
+    status = {
+        "battery_soc": soc,
+        "solar_power": 3000,
+        "load_power": 800,
+        "grid_power": -200,
+        "battery_power": -2000,
+    }
+    config = {
+        "surplus_calculation": "direct",
+        "household_buffer_kw": 0.5,
+        "home_battery_minimum": 80,
+    }
+    assert actions._calculate_solar_surplus(status, 0, config) == 0
+
+
+@pytest.mark.parametrize("method", ["direct", "grid_based"])
+def test_solar_surplus_above_minimum_handles_home_load_excluding_ev(method):
+    status = {
+        "battery_soc": 80,
+        "solar_power": 3000,
+        "load_power": 1500,
+        "home_load_basis": "excludes_ev",
+        "grid_power": 1000,
+        "battery_power": -1500,
+    }
+    config = {
+        "surplus_calculation": method,
+        "household_buffer_kw": 0.5,
+        "home_battery_minimum": 80,
+        "allow_parallel_charging": True,
+        "max_battery_charge_rate_kw": 5.0,
+    }
+    assert actions._calculate_solar_surplus(status, 1.0, config) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("method", ["direct", "grid_based"])
+def test_solar_surplus_parallel_reserves_battery_below_minimum(method):
+    status = {
+        "battery_soc": 79,
+        "solar_power": 12000,
+        "load_power": 1000,
+        "grid_power": -7000,
+        "battery_power": -4000,
+    }
+    config = {
+        "surplus_calculation": method,
+        "household_buffer_kw": 2.0,
+        "min_battery_soc": 80,
+        "allow_parallel_charging": True,
+        "max_battery_charge_rate_kw": 5.0,
+    }
+    assert actions._calculate_solar_surplus(status, 0, config) == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("method", ["direct", "grid_based"])
+@pytest.mark.parametrize("parallel", [False, True])
+def test_solar_surplus_starts_after_battery_reaches_minimum(
+    monkeypatch, method, parallel,
+):
+    hass = _Hass([])
+    vehicle_id = "VIN123"
+    actions._dynamic_ev_state.clear()
+    state = _solar_surplus_state(current_amps=0)
+    state["charging_started"] = False
+    state["high_surplus_start"] = datetime.now() - timedelta(minutes=4)
+    state["params"].update({
+        "surplus_calculation": method,
+        "min_battery_soc": 80,
+        "pause_below_soc": 70,
+        "allow_parallel_charging": parallel,
+        "max_battery_charge_rate_kw": 5.0,
+        "notify_on_start": False,
+    })
+    actions._dynamic_ev_state["entry-1"] = {vehicle_id: state}
+    live_status = {
+        "battery_soc": 79,
+        "solar_power": 3000,
+        "load_power": 800,
+        "grid_power": -200,
+        "battery_power": -2000,
+    }
+    set_amps_calls = _install_solar_surplus_runtime_stubs(monkeypatch, live_status)
+    start = AsyncMock(return_value=True)
+    monkeypatch.setattr(actions, "_action_start_ev_charging", start)
+    monkeypatch.setattr(actions, "_is_vehicle_charge_complete", AsyncMock(return_value=False))
+
+    asyncio.run(actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id))
+    assert state["paused"] is True
+    assert not start.await_count
+    assert not set_amps_calls
+
+    live_status["battery_soc"] = 80
+    asyncio.run(actions._dynamic_ev_update_surplus(hass, _Entry(), "entry-1", vehicle_id))
+    assert state["paused"] is False
+    assert state["charging_started"] is True
+    assert state["allocated_surplus_kw"] == pytest.approx(1.7)
+    start.assert_awaited_once()
+    assert set_amps_calls[-1] > 0
 
 
 def test_active_solar_surplus_refreshes_threshold_with_hysteresis(monkeypatch):
@@ -3899,10 +4026,10 @@ def test_observed_wall_connector_power_is_counted_for_solar_surplus_stop(monkeyp
     async def fake_live_status(*args, **kwargs):
         return {
             "battery_soc": 55,
-            "grid_power": 700,
+            "grid_power": 4500,
             "battery_power": -700,
             "solar_power": 9200,
-            "load_power": 9100,
+            "load_power": 13000,
         }
 
     stop_calls = []
@@ -4114,7 +4241,7 @@ def test_solar_surplus_direct_parallel_reserve_tops_up_existing_battery_charge()
             "household_buffer_kw": 2.0,
             "allow_parallel_charging": True,
             "max_battery_charge_rate_kw": 5.0,
-            "min_battery_soc": 20,
+            "min_battery_soc": 80,
         },
     )
 
@@ -12842,7 +12969,7 @@ def test_solar_surplus_parallel_reserve_sheds_to_minimum_while_battery_charging(
             "household_buffer_kw": 2.0,
             "allow_parallel_charging": True,
             "max_battery_charge_rate_kw": 5.0,
-            "min_battery_soc": 20,
+            "min_battery_soc": 40,
             "pause_below_soc": 10,
         }
     )

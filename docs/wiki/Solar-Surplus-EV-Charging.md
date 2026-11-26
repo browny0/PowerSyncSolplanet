@@ -20,6 +20,13 @@ no solar generation, such as at night, the status says "No solar generation
 right now" instead. The limit only applies to solar charging; planned grid
 charging and manual charging are not affected.
 
+Once the home battery reaches the configured minimum, solar currently charging
+it counts as available for the car, less the household buffer. Charging the
+car may therefore reduce the rate at which the home battery charges. Below the
+minimum, the battery has priority: the car waits unless parallel charging is
+enabled and sufficient solar remains after the configured battery charge-rate
+reserve and other safety checks.
+
 For a Tesla Wall Connector with a local Home Assistant entry, PowerSync can
 match the connector's serial number to the vehicle reported by Tesla Fleet or
 Teslemetry. A fresh unplugged reading prevents a Solar Surplus start while

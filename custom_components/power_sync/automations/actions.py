@@ -12930,6 +12930,22 @@ async def stop_solar_surplus_ev_charging(
     return all_stopped
 
 
+def _battery_at_solar_surplus_minimum(live_status: dict, config: dict) -> bool:
+    """Return whether a valid battery SOC has reached the configured minimum."""
+    soc = live_status.get("battery_soc")
+    if isinstance(soc, bool):
+        return False
+    try:
+        soc = float(soc)
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(soc)
+        and 0 <= soc <= 100
+        and soc >= get_solar_surplus_min_battery_soc(config)
+    )
+
+
 def _parallel_battery_reserve_kw(
     live_status: dict,
     config: dict,
@@ -12939,9 +12955,35 @@ def _parallel_battery_reserve_kw(
     """Return the extra battery charge reserve to withhold from EV surplus."""
     from ..solar_surplus_config import parallel_battery_reserve_kw
 
+    if _battery_at_solar_surplus_minimum(live_status, config):
+        return 0.0
+
+    try:
+        max_charge_kw = max(0.0, float(config.get("max_battery_charge_rate_kw", 5.0) or 0.0))
+    except (TypeError, ValueError):
+        max_charge_kw = 5.0
+    if max_charge_kw <= 0:
+        return 0.0
+
+    battery_soc = live_status.get("battery_soc")
+    try:
+        battery_soc = float(battery_soc) if battery_soc is not None else None
+    except (TypeError, ValueError):
+        battery_soc = None
+
+    if battery_soc is not None and battery_soc >= _BATTERY_FULL_RESERVE_BYPASS_SOC:
+        return 0.0
+
+    min_soc = get_solar_surplus_min_battery_soc(config)
+    battery_below_min = battery_soc is not None and battery_soc < min_soc
+    battery_currently_charging = battery_charge_kw > 0.05
+    if not battery_below_min and not battery_currently_charging:
+        return 0.0
+
     return parallel_battery_reserve_kw(
         config, live_status.get("battery_soc"), battery_charge_kw, method,
     )
+
 
 
 def _curtailed_full_battery_active_ev(
@@ -13036,40 +13078,20 @@ def _no_solar_generation(live_status: Optional[dict]) -> bool:
     return math.isfinite(solar_w) and solar_w < _NO_SOLAR_GENERATION_W
 
 
-def _calibration_drain_active(hass: Optional[HomeAssistant], entry_id: str | None) -> bool:
-    """Return True while Tesla's explicit calibration alert owns the battery.
-
-    During a Tesla calibration the gateway discharges the battery on its own
-    and ignores charge commands. That energy is exported unless something on
-    site uses it, so Solar Surplus may treat it as available for the EV. Only
-    the local alert counts; the older operation-mode inference does not.
-    """
-    if hass is None or not entry_id:
-        return False
-    from ..tesla_calibration import CALIBRATION_SOURCE_LOCAL_ALERT, calibration_sources
-
-    entry_data = getattr(hass, "data", {}).get(DOMAIN, {}).get(entry_id)
-    if not isinstance(entry_data, dict):
-        return False
-    return CALIBRATION_SOURCE_LOCAL_ALERT in calibration_sources(entry_data)
-
-
 def _calculate_solar_surplus(
     live_status: dict,
     current_ev_power_kw: float,
     config: dict,
     hass: Optional[HomeAssistant] = None,
-    *,
-    calibration_drain: bool = False,
 ) -> float:
     """
     Calculate available solar surplus for EV charging.
 
     Two methods are supported:
-    - direct: surplus = solar - load - battery_charge - buffer
+    - direct: surplus = solar - load - buffer, less battery charging below the minimum
     - grid_based (AmpPilot style): surplus = -grid + current_ev + battery_charge
-    When parallel charging is enabled, the configured battery charge rate is
-    reserved before EV amps are calculated.
+    Below the battery minimum, parallel charging reserves the configured
+    battery charge rate before EV amps are calculated.
 
     Args:
         live_status: Dict with solar_power, grid_power, battery_power, load_power (all in W)
@@ -13121,12 +13143,8 @@ def _calculate_solar_surplus(
         ev_drift_kw = _ev_power_drift_since_site_sample_kw(live_status)
         if ev_drift_kw:
             ev_term_kw = max(0.0, current_ev_power_kw - ev_drift_kw)
-        # Subtract battery discharge: grid export from battery isn't solar surplus.
-        # A Tesla calibration discharges the battery regardless of PowerSync, so
-        # that export may go to the EV instead. The grid term still limits the EV
-        # to energy that is actually being exported.
-        discharge_penalty_kw = 0.0 if calibration_drain else battery_discharge_kw
-        surplus = -grid_kw + ev_term_kw + battery_charge_kw - discharge_penalty_kw
+        # Subtract battery discharge: grid export from battery isn't solar surplus
+        surplus = -grid_kw + ev_term_kw + battery_charge_kw - battery_discharge_kw
         battery_reserve_kw = _parallel_battery_reserve_kw(
             live_status, config, method, battery_charge_kw
         )
@@ -13148,17 +13166,19 @@ def _calculate_solar_surplus(
             if live_status.get("home_load_basis") == "excludes_ev"
             else load_kw - current_ev_power_kw
         )
-        surplus = solar_kw - real_household_load_kw - battery_charge_kw
-        if calibration_drain and grid_kw <= config.get("grid_import_tolerance_kw", 0.1):
-            # Calibration discharge is otherwise exported; offer it to the EV.
-            surplus += max(0.0, battery_kw)
+        battery_priority_kw = (
+            0.0 if _battery_at_solar_surplus_minimum(live_status, config)
+            else battery_charge_kw
+        )
+        surplus = solar_kw - real_household_load_kw - battery_priority_kw
         battery_reserve_kw = _parallel_battery_reserve_kw(
             live_status, config, method, battery_charge_kw
         )
         available_kw = max(0, surplus - buffer_kw - battery_reserve_kw)
         _LOGGER.debug(
             f"Surplus calc (direct): solar={solar_kw:.2f}kW, load={load_kw:.2f}kW (real={real_household_load_kw:.2f}kW), "
-            f"bat_charge={battery_charge_kw:.2f}kW → raw={surplus:.2f}kW, "
+            f"bat_charge={battery_charge_kw:.2f}kW, battery_priority={battery_priority_kw:.2f}kW → "
+            f"raw={surplus:.2f}kW, "
             f"buffer={buffer_kw:.2f}kW, battery_reserve={battery_reserve_kw:.2f}kW, "
             f"available={available_kw:.2f}kW"
         )
@@ -16116,23 +16136,6 @@ async def _dynamic_ev_update_surplus(
     else:
         state.pop("home_battery_soc_unknown_logged", None)
 
-    # Tesla drains the battery during a calibration whatever PowerSync does, so
-    # battery-priority floors cannot protect it. Let the EV absorb the drain
-    # (still subject to the export-value limit) instead of exporting it.
-    calibration_drain = _calibration_drain_active(hass, entry_id)
-    if calibration_drain:
-        min_soc = 0
-        pause_soc = 0
-    if bool(state.get("calibration_drain")) != calibration_drain:
-        state["calibration_drain"] = calibration_drain
-        _LOGGER.info(
-            "Solar surplus EV: Tesla calibration %s - %s",
-            "active" if calibration_drain else "ended",
-            "calibration discharge may charge the EV instead of exporting"
-            if calibration_drain
-            else "normal battery floors restored",
-        )
-
     # Parallel charging parameters
     allow_parallel = params.get("allow_parallel_charging", False)
     max_battery_charge_kw = params.get("max_battery_charge_rate_kw", 5.0)
@@ -16752,7 +16755,6 @@ async def _dynamic_ev_update_surplus(
         total_ev_power_kw,
         params,
         hass,
-        calibration_drain=calibration_drain,
     )
 
     # Check if parallel charging is possible below the battery floor. At this
@@ -20766,6 +20768,7 @@ async def _action_start_ev_charging_dynamic_locked(
                 sorted(adoption_snapshot["measurements"])
             )
 
+
     # Stop any existing dynamic charging for this vehicle.  Record whether that
     # teardown actually commanded the charger off: cloud EV telemetry lags the
     # command by a poll interval, so the not-yet-settled aftermath of our own
@@ -20854,6 +20857,7 @@ async def _action_start_ev_charging_dynamic_locked(
             vehicle_id,
             boost_adoption_evidence,
         )
+
     elif handoff_observation is None:
         teardown_success = await _action_stop_ev_charging_dynamic(
             hass, config_entry, teardown_params,
@@ -21287,11 +21291,7 @@ async def _action_start_ev_charging_dynamic_locked(
 
             start_params = dict(params)
             start_params["amps"] = start_amps
-            if (
-                handoff_observation is not None
-                or already_physically_charging
-                or boost_adoption_state is not None
-            ):
+            if handoff_observation is not None or already_physically_charging:
                 start_success = True
                 _LOGGER.info(
                     "Dynamic EV: %s was already physically charging; "
@@ -21336,8 +21336,7 @@ async def _action_start_ev_charging_dynamic_locked(
             # register a new session after that late completion; contain the
             # exact vehicle first and leave any unknown outcome fail-closed.
             if not registration_authority():
-                # An adopted charge sent no Start, so there is none to undo.
-                if handoff_observation is None and boost_adoption_state is None:
+                if handoff_observation is None:
                     await _compensate_late_positive_start()
                 record_ev_command(
                     hass,
