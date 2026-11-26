@@ -38495,6 +38495,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 _LOGGER.debug(f"Neovolt force discharge hardware refreshed ({duration}min, {power_w}W)")
                 return
+            solplanet_coord = entry_data.get("solplanet_coordinator")
+            if solplanet_coord:
+                discharge_result = await _guarded_force_discharge_write(
+                    lambda guarded_w: solplanet_coord.force_discharge(
+                        duration, power_w=guarded_w
+                    )
+                )
+                if not discharge_result:
+                    raise HomeAssistantError(
+                        "Solplanet force discharge hardware refresh was not confirmed"
+                    )
+                _LOGGER.debug(
+                    "Solplanet force discharge hardware refreshed (%dmin, %sW)",
+                    duration,
+                    power_w,
+                )
+                return
             solaredge_coord = entry_data.get("solaredge_coordinator")
             if solaredge_coord:
                 release_result = await _guarded_force_discharge_write(

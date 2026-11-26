@@ -56,8 +56,13 @@ two optimization intervals; without one, the requested discharge is retained.
 The cap has no additional safety margin. During optimizer-managed discharge,
 PowerSync checks the forecast-derived limit on each optimizer cycle and
 rewrites the Solplanet schedule only when the effective limit changes by more
-than 100 W. This lets the export limit follow forecast updates without
-repeatedly rewriting an unchanged schedule.
+than 100 W. The updated command still passes through export safety checks.
+Manually requested exports are re-checked too: the Solplanet coordinator
+remembers the requested power and end time, and on each 30-second refresh
+re-sends the export for the remaining time if the forecast-derived limit has
+moved by more than 100 W. A failed write is retried on the next refresh, and
+stopping or restoring the battery ends the tracking.
+This follows forecast updates, not changes in live measured solar alone.
 
 PowerSync requires the integration's **Replace Schedule Day** and
 **Clear Schedule** actions. A force charge/discharge replaces that day's

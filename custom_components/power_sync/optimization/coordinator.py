@@ -12610,7 +12610,7 @@ class OptimizationCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     forecast_discharge_power_changed = False
                     if force_type == "discharge" and self.battery_system == "solplanet":
                         forecast_change_check = getattr(
-                            battery,
+                            self.energy_coordinator,
                             "forecast_limited_discharge_power_changed",
                             None,
                         )

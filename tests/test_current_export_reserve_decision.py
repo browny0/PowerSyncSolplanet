@@ -76,6 +76,60 @@ def _run(coordinator, action):
     asyncio.run(coordinator._execute_optimizer_action(action))
 
 
+def test_solplanet_export_refresh_tracks_forecast_through_energy_coordinator(
+    opt_module, clock,
+):
+    class SolplanetEnergy:
+        forecast_kw = 4.0
+        last_power_w = 6000
+
+        def forecast_limited_discharge_power_changed(self, requested_w):
+            return abs(min(requested_w, 10000 - self.forecast_kw * 1000)
+                       - self.last_power_w) > 100
+
+    energy = SolplanetEnergy()
+
+    class ServiceBattery(_FakeBattery):
+        async def force_discharge(self, *args, **kwargs):
+            result = await super().force_discharge(*args, **kwargs)
+            if result is not False:
+                energy.last_power_w = min(
+                    kwargs["power_w"], 10000 - energy.forecast_kw * 1000
+                )
+            return result
+
+    battery = ServiceBattery(force_discharge_result=True)
+    coordinator, _, actions, _ = _controller(
+        opt_module, soc=0.9, projected=0.8, battery=battery, slots=6,
+    )
+    coordinator.battery_system = "solplanet"
+    coordinator.energy_coordinator = energy
+    coordinator._config.max_discharge_w = 10000
+    coordinator._supports_target_export_power = lambda: True
+    coordinator._force_discharge_hardware_needs_refresh = lambda _power: False
+    for action in actions:
+        action.power_w = 10000
+    coordinator._set_optimizer_force_state("discharge", 30, 10000)
+
+    _run(coordinator, actions[0])
+    assert battery.force_discharge_calls == []
+
+    energy.forecast_kw = 2.0
+    _run(coordinator, actions[0])
+    assert len(battery.force_discharge_calls) == 1
+    assert battery.force_discharge_calls[-1][1:3] == (10000, True)
+    assert energy.last_power_w == 8000
+
+    energy.forecast_kw = 2.05
+    _run(coordinator, actions[0])
+    assert len(battery.force_discharge_calls) == 1
+
+    energy.forecast_kw = 5.0
+    _run(coordinator, actions[0])
+    assert len(battery.force_discharge_calls) == 2
+    assert energy.last_power_w == 5000
+
+
 @pytest.mark.parametrize("active", [False, True])
 def test_live_soc_above_floor_can_be_blocked_by_planned_projection(opt_module, clock, active):
     coordinator, battery, actions, reads = _controller(opt_module, active=active)

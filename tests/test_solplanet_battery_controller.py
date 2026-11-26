@@ -449,6 +449,47 @@ def test_forecast_power_change_requests_schedule_refresh_only_when_limit_changes
     ) is True
 
 
+def test_forecast_refresh_rewrites_schedule_and_retries_failed_update(monkeypatch):
+    hass = _FakeHass()
+    controller = _controller(hass, inverter_ac_limit_kw=10)
+
+    assert asyncio.run(
+        controller.force_discharge(60, 10000, solar_forecast_kw=4)
+    )
+    assert hass.services.calls[0][2]["pout"] == 6000
+    assert controller.forecast_limited_discharge_power_changed(
+        10000, solar_forecast_kw=2,
+    )
+
+    original_call = hass.services.async_call
+
+    async def failed_call(domain, service, data, blocking=True):
+        if domain == "solplanet" and service == "replace_schedule_day":
+            raise RuntimeError("schedule write failed")
+        return await original_call(domain, service, data, blocking=blocking)
+
+    monkeypatch.setattr(hass.services, "async_call", failed_call)
+    assert not asyncio.run(
+        controller.force_discharge(60, 10000, solar_forecast_kw=2)
+    )
+    assert controller.forecast_limited_discharge_power_changed(
+        10000, solar_forecast_kw=2,
+    )
+
+    monkeypatch.setattr(hass.services, "async_call", original_call)
+    assert asyncio.run(
+        controller.force_discharge(60, 10000, solar_forecast_kw=2)
+    )
+    schedule_writes = [
+        data for domain, service, data in hass.services.calls
+        if domain == "solplanet" and service == "replace_schedule_day"
+    ]
+    assert [write["pout"] for write in schedule_writes] == [6000, 8000]
+    assert not controller.forecast_limited_discharge_power_changed(
+        10000, solar_forecast_kw=2,
+    )
+
+
 def test_temporary_slot_replaces_an_overlapping_existing_schedule():
     hass = _FakeHass()
     hass.states.get(
@@ -514,3 +555,48 @@ def test_clear_schedule_action_is_required():
         assert str(exc) == "solplanet_schedule_service_unavailable"
     else:
         raise AssertionError("Expected missing Clear Schedule action to fail")
+
+
+def test_coordinator_refreshes_active_export_when_forecast_changes():
+    import ast
+    import asyncio
+    import logging
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    source = Path("custom_components/power_sync/coordinator.py").read_text()
+    cls = next(
+        n
+        for n in ast.parse(source).body
+        if isinstance(n, ast.ClassDef) and n.name == "SolplanetEnergyCoordinator"
+    )
+    names = {"force_discharge", "_refresh_export_for_forecast"}
+    funcs = [n for n in cls.body if getattr(n, "name", None) in names]
+    ns = {"time": time, "_LOGGER": logging.getLogger("t")}
+    exec(compile(ast.Module(body=funcs, type_ignores=[]), "c", "exec"), ns)
+
+    calls = []
+
+    class Controller:
+        async def force_discharge(self, minutes, power, solar_forecast_kw=None):
+            calls.append((minutes, power))
+            return True
+
+    fake = SimpleNamespace(
+        _controller=Controller(),
+        _export_request=None,
+        _native_control_allowed=lambda _n: True,
+        _current_solar_forecast_kw=lambda: None,
+        forecast_limited_discharge_power_changed=lambda _p: True,
+    )
+    fake.force_discharge = lambda m, p: ns["force_discharge"](fake, m, p)
+
+    asyncio.run(ns["force_discharge"](fake, 60, 5000))
+    asyncio.run(ns["_refresh_export_for_forecast"](fake))
+    assert calls[0] == (60, 5000)
+    assert calls[1][1] == 5000 and 58 <= calls[1][0] <= 60
+
+    fake._export_request = (5000, time.monotonic() - 1)
+    asyncio.run(ns["_refresh_export_for_forecast"](fake))
+    assert len(calls) == 2 and fake._export_request is None

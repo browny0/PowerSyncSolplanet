@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import copy
+import logging
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 INIT_PATH = (
     Path(__file__).resolve().parent.parent
@@ -144,3 +151,47 @@ def test_solplanet_hold_and_backup_reserve_routing():
 
     assert '("solplanet_coordinator", "solplanet")' in source
     assert "solplanet_coord.set_backup_reserve(percent)" in source
+
+
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_optimizer_solplanet_discharge_uses_guarded_hardware_only_path(succeeds):
+    tree = ast.parse(INIT_PATH.read_text())
+    handler = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_force_discharge"
+    )
+    branch = next(
+        node for node in ast.walk(handler)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "solplanet_coord"
+        and "Solplanet force discharge hardware refresh" in ast.unparse(node)
+    )
+    wrapper = ast.parse(
+        "async def run(solplanet_coord, duration, power_w):\n"
+        "    pass\n"
+        "    return 'fell through'\n"
+    )
+    wrapper.body[0].body[0] = copy.deepcopy(branch)
+    ast.fix_missing_locations(wrapper)
+
+    class HomeAssistantError(Exception):
+        pass
+
+    async def guarded_write(writer):
+        return await writer(7500)
+
+    namespace = {
+        "_guarded_force_discharge_write": guarded_write,
+        "HomeAssistantError": HomeAssistantError,
+        "_LOGGER": logging.getLogger(__name__),
+    }
+    exec(compile(wrapper, str(INIT_PATH), "exec"), namespace)
+    coordinator = SimpleNamespace(force_discharge=AsyncMock(return_value=succeeds))
+
+    if succeeds:
+        assert asyncio.run(namespace["run"](coordinator, 30, 10000)) is None
+    else:
+        with pytest.raises(HomeAssistantError, match="not confirmed"):
+            asyncio.run(namespace["run"](coordinator, 30, 10000))
+    coordinator.force_discharge.assert_awaited_once_with(30, power_w=7500)

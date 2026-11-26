@@ -12058,6 +12058,7 @@ class SolplanetEnergyCoordinator(
         )
         self._energy_acc = EnergyAccumulator(hass, "solplanet", entry_id)
         self._validated = False
+        self._export_request: tuple[int, float] | None = None
 
         super().__init__(
             hass,
@@ -12080,6 +12081,8 @@ class SolplanetEnergyCoordinator(
                 _LOGGER.warning("Solplanet entity read failed, returning stale data: %s", exc)
                 return stale
             raise UpdateFailed(f"Solplanet entity read failed: {exc}") from exc
+
+        await self._refresh_export_for_forecast()
 
         solar_kw = status["solar_power"]
         grid_kw = status["grid_power"]
@@ -12137,11 +12140,33 @@ class SolplanetEnergyCoordinator(
     async def force_discharge(self, duration_minutes: int, power_w: int) -> bool:
         if not self._native_control_allowed("Solplanet force_discharge"):
             return False
-        return await self._controller.force_discharge(
+        result = await self._controller.force_discharge(
             duration_minutes,
             power_w,
             solar_forecast_kw=self._current_solar_forecast_kw(),
         )
+        if result:
+            self._export_request = (
+                int(power_w),
+                time.monotonic() + duration_minutes * 60,
+            )
+        return result
+
+    async def _refresh_export_for_forecast(self) -> None:
+        """Re-cap an active export as the PV forecast changes."""
+        request = self._export_request
+        if request is None:
+            return
+        power_w, deadline = request
+        remaining_min = int((deadline - time.monotonic()) // 60)
+        if remaining_min < 1:
+            self._export_request = None
+            return
+        try:
+            if self.forecast_limited_discharge_power_changed(power_w):
+                await self.force_discharge(remaining_min, power_w)
+        except Exception as exc:
+            _LOGGER.warning("Solplanet export forecast refresh failed: %s", exc)
 
     def _current_solar_forecast_kw(self) -> float | None:
         """Read a fresh provider-neutral forecast from this entry's optimizer."""
@@ -12167,6 +12192,7 @@ class SolplanetEnergyCoordinator(
     async def restore_normal(self) -> bool:
         if not self._native_control_allowed("Solplanet restore_normal"):
             return False
+        self._export_request = None
         domain_data = self.hass.data.get(DOMAIN, {})
         runtime = (
             domain_data.get(self._entry_id, {})
